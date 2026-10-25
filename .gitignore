@@ -1,0 +1,41 @@
+# ---- 运行时与二进制（体积大，且与平台相关）----
+runtime/
+*/payload.zip
+dist/
+*.exe
+*.exe.bak_*
+
+# ---- 敏感数据：绝不能提交 ----
+# 注意用 data/* 而不是 data/：目录被整体忽略时，下面的 ! 白名单不会生效，
+# 配置模板就进不了仓库（2026-10-25 实测踩坑）
+data/*
+!data/.gitkeep
+!data/db_config.example.json
+*.log
+*.pid
+
+# ---- 第三方 ----
+frontend/phpMyAdmin*/
+vendor/
+node_modules/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- 编辑器/系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ---- 临时产物 ----
+*.tmp
+*.bak
+*.bak_*
+_hidden_bats/

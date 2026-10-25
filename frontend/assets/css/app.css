@@ -1,0 +1,301 @@
+:root{
+  --bg:#f4f6fb; --panel:#fff; --ink:#1f2733; --muted:#6b7686;
+  --line:#e6eaf2; --brand:#2f6df6; --brand-d:#1f4fc4;
+  --ok:#1faa6b; --warn:#e08a00; --err:#e0473e; --chip:#eef3ff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:"Microsoft YaHei","PingFang SC",system-ui,Segoe UI,Arial,sans-serif;
+  background:var(--bg);color:var(--ink);font-size:14px}
+#app{display:flex;min-height:100vh}
+
+/* 侧栏 */
+.sidebar{width:230px;background:#0f1830;color:#cdd6ea;display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:10px;padding:18px 16px;border-bottom:1px solid #1d2845}
+.logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#22d3ee);
+  color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:18px}
+.brand-txt strong{display:block;color:#fff;font-size:15px}
+.brand-txt small{color:#8893ad;font-size:11px}
+#nav{display:flex;flex-direction:column;padding:10px 8px;flex:1}
+#nav a{padding:11px 14px;border-radius:9px;color:#aeb8d0;cursor:pointer;margin:2px 0;font-size:14px;user-select:none}
+#nav a:hover{background:#16213d;color:#fff}
+#nav a.active{background:var(--brand);color:#fff;font-weight:600}
+.engine-box{padding:14px;margin:8px;border-top:1px solid #1d2845}
+.engine-state{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px}
+.dot{width:10px;height:10px;border-radius:50%;background:#64708c;box-shadow:0 0 0 3px rgba(100,112,140,.2)}
+.dot.run{background:var(--ok);box-shadow:0 0 0 3px rgba(31,170,107,.25)}
+.dot.err{background:var(--err);box-shadow:0 0 0 3px rgba(224,71,62,.25)}
+.engine-btns{display:flex;flex-wrap:wrap;gap:6px}
+
+/* 主区 */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;
+  padding:14px 22px;background:var(--panel);border-bottom:1px solid var(--line)}
+.topbar h1{font-size:18px;margin:0}
+.topbar-right{display:flex;align-items:center;gap:10px}
+.content{padding:22px;overflow:auto}
+.loading{color:var(--muted);padding:40px;text-align:center}
+
+/* 卡片 / 网格 */
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+.stat{display:flex;flex-direction:column;gap:6px}
+.stat .num{font-size:26px;font-weight:700;color:var(--brand)}
+.stat .lbl{color:var(--muted);font-size:13px}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+.panel h3{margin:0 0 14px;font-size:15px}
+.client-panel{border-left:3px solid var(--brand);background:linear-gradient(90deg,rgba(86,124,206,.06),var(--panel) 40%)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.spacer{flex:1}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600;background:#fafbfe}
+tr:hover td{background:#f8faff}
+.tag{display:inline-block;padding:1px 8px;border-radius:20px;background:var(--chip);color:var(--brand-d);font-size:12px;margin:1px}
+.tag.gray{background:#eef1f6;color:#6b7686}
+.mono{font-family:Consolas,Menlo,monospace;font-size:12px;word-break:break-all}
+.muted{color:var(--muted)}
+.nowrap{white-space:nowrap}
+
+/* 按钮 */
+.btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:8px 14px;border-radius:9px;
+  cursor:pointer;font-size:13px;transition:.15s}
+.btn:hover{border-color:#c7d0e0}
+.btn-primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn-primary:hover{background:var(--brand-d)}
+.btn-danger{background:#fff;border-color:var(--err);color:var(--err)}
+.btn-ghost{background:#f3f6fc}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* 表单 */
+.field{margin-bottom:12px}
+.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+.input,textarea.input,select.input{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;
+  font-size:13px;font-family:inherit;background:#fff;color:var(--ink)}
+textarea.input{min-height:80px;resize:vertical}
+.badge{background:var(--warn);color:#fff;padding:2px 9px;border-radius:20px;font-size:12px}
+.hidden{display:none}
+
+/* 设置页分组区块（2026-10-19：运行设置按用途分类，每组带标题+说明） */
+.sect{border:1px solid var(--line);border-radius:11px;padding:15px 16px 6px;margin-bottom:14px;background:#fcfdff}
+.sect-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.sect-head .ico{width:22px;height:22px;flex:0 0 22px;display:grid;place-items:center;
+  border-radius:7px;background:var(--chip);color:var(--brand-d);font-size:12px}
+.sect-head h4{margin:0;font-size:13.5px;color:var(--ink)}
+.sect-desc{font-size:12px;color:var(--muted);line-height:1.65;margin:0 0 12px 30px}
+.sect-desc b,.sect-desc strong{color:#4a5668;font-weight:600}
+.field .tip{display:block;font-size:11.5px;color:#9aa5b6;line-height:1.6;margin-top:5px}
+.field label.chk{display:flex;align-items:flex-start;gap:7px;font-size:12.5px;color:var(--ink);cursor:pointer}
+.field label.chk input{margin-top:2px;flex:0 0 auto}
+/* 字段自适应网格：宽屏两列（填满、不留大片空白），窄屏自动回落单列。
+   .wide 用于勾选框/长文本等需要通栏的字段。 */
+.sect-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:0 20px}
+.sect-grid>.wide{grid-column:1/-1}
+.sect-grid .field{margin-bottom:12px}
+/* 保存按钮栏：与卡片同宽，右对齐更贴近表单习惯 */
+.sect-actions{display:flex;justify-content:flex-end;gap:10px;padding-top:4px}
+
+/* ---------- 发布商品页（2026-10-20） ---------- */
+.pub-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start}
+@media (max-width: 980px){ .pub-layout{grid-template-columns:1fr} }
+
+.pub-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+.pub-card h3{margin:0 0 4px;font-size:14px}
+.pub-card .hint{font-size:12px;color:var(--muted);margin:0 0 12px;line-height:1.7}
+
+/* 图片上传九宫格 */
+.pub-imgs{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:10px}
+.pub-thumb{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;
+  border:1px solid var(--line);background:#f6f8fc}
+.pub-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.pub-thumb .del{position:absolute;top:4px;right:4px;width:20px;height:20px;border-radius:50%;
+  border:none;background:rgba(0,0,0,.55);color:#fff;font-size:12px;line-height:1;cursor:pointer}
+.pub-thumb .main-tag{position:absolute;left:4px;bottom:4px;background:rgba(86,124,206,.92);
+  color:#fff;font-size:11px;padding:1px 6px;border-radius:6px}
+.pub-add{aspect-ratio:1/1;border:1.5px dashed #c8d2e4;border-radius:10px;background:#fbfcff;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+  color:#8b96a8;font-size:12px;cursor:pointer;transition:.15s}
+.pub-add:hover{border-color:var(--brand);color:var(--brand);background:#f4f7ff}
+.pub-add .plus{font-size:22px;line-height:1}
+
+/* 字数统计 */
+.pub-count{float:right;font-size:11px;color:#9aa5b6;font-weight:400}
+.pub-count.over{color:var(--err)}
+
+/* 价格输入组 */
+.price-row{display:flex;gap:10px}
+.price-row .field{flex:1;margin-bottom:10px}
+.input-wrap{position:relative}
+.input-wrap .unit{position:absolute;left:10px;top:50%;transform:translateY(-50%);
+  color:#8b96a8;font-size:13px}
+.input-wrap .input{padding-left:24px}
+
+/* 右侧粘性操作区 */
+.pub-side{position:sticky;top:16px}
+.pub-actions{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.pub-actions .btn{width:100%;justify-content:center}
+.pub-note{font-size:11.5px;color:#9aa5b6;line-height:1.7;margin-top:10px}
+.preview-badge{display:inline-block;background:var(--warn);color:#fff;font-size:11px;
+  padding:2px 8px;border-radius:20px;margin-left:6px;vertical-align:middle}
+
+/* 发布进度/结果（页内文字，不用弹窗，符合"静默"要求） */
+.pub-status{margin-top:10px;font-size:12px;line-height:1.7;color:var(--brand-d);
+  background:var(--chip);border-radius:8px;padding:8px 10px;word-break:break-all}
+.pub-status.err{color:var(--err);background:#fdeeee}
+
+/* 弹层 */
+.modal-mask{position:fixed;inset:0;background:rgba(15,24,48,.45);display:none;align-items:center;justify-content:center;z-index:50}
+.modal-mask.show{display:flex}
+.modal{background:#fff;border-radius:14px;width:460px;max-width:92vw;padding:20px;max-height:88vh;overflow:auto}
+.modal h3{margin:0 0 14px}
+.modal .foot{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+
+/* toast */
+.toast{position:fixed;right:22px;bottom:22px;background:#0f1830;color:#fff;padding:11px 16px;border-radius:10px;
+  font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;z-index:99;max-width:360px}
+.toast.show{opacity:1;transform:none}
+.toast.err{background:var(--err)}
+.toast.ok{background:var(--ok)}
+.empty{color:var(--muted);padding:26px;text-align:center}
+.codebox{background:#0f1830;color:#d7e3ff;padding:12px;border-radius:9px;font-family:Consolas,monospace;
+  font-size:12px;white-space:pre-wrap;word-break:break-all}
+
+/* 商品列表 / 采集进度条（2026-10-17） */
+.progress-wrap{margin-bottom:16px}
+.progress-bar{height:10px;background:#e8edf6;border-radius:20px;overflow:hidden}
+.progress-inner{height:100%;width:0;background:linear-gradient(90deg,var(--brand),#22d3ee);
+  border-radius:20px;transition:width .4s}
+.progress-text{font-size:12px;color:var(--muted);margin-top:6px}
+.thumb{width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid var(--line);background:#f2f4f9}
+.desc-clamp{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chk-list{display:flex;flex-direction:column;gap:8px;max-height:320px;overflow:auto}
+.chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer}
+
+/* 卡卷状态切换按钮（点击启用/停用） */
+.status-btn{min-width:56px;font-weight:600}
+.status-btn.on{background:#e6f7e9;color:#1a7f37;border-color:#bfe6cc}
+.status-btn.on:hover{background:#d4f2dd}
+.status-btn.off{background:#f0f1f4;color:#8a93a3;border-color:#e2e5ea}
+.status-btn.off:hover{background:#e7e9ee}
+input[type="checkbox"].rowchk{width:15px;height:15px;cursor:pointer;vertical-align:middle}
+
+/* ============================================================
+   响应式适配（2026-10-22 用户要求：手机 / Pad / 电脑）
+   ------------------------------------------------------------
+   原则：桌面端一行不改，只在小屏媒体查询里调整。
+   三档断点：
+     1024px  Pad 横屏 / 小笔记本 —— 侧栏收窄
+      820px  Pad 竖屏 / 大手机   —— 侧栏变抽屉 + 汉堡按钮
+      560px  手机               —— 单列、紧凑
+   ============================================================ */
+
+/* 汉堡按钮：只在窄屏出现 */
+.nav-toggle{
+  display:none;align-items:center;justify-content:center;width:38px;height:38px;
+  border:1px solid var(--line);background:#fff;border-radius:9px;cursor:pointer;
+  font-size:18px;line-height:1;flex:0 0 auto;color:var(--ink);
+}
+.nav-mask{display:none}
+
+/* ---------- ① 1024px：Pad 横屏 / 小笔记本 ---------- */
+@media (max-width: 1024px){
+  .sidebar{width:196px}
+  .brand{padding:14px 12px}
+  .brand-txt strong{font-size:14px}
+  #nav a{padding:10px 12px;font-size:13.5px}
+  .content{padding:16px}
+  .sect-grid{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+}
+
+/* ---------- ② 820px：Pad 竖屏 / 大手机（侧栏改抽屉） ---------- */
+@media (max-width: 820px){
+  #app{display:block}
+
+  /* 侧栏变成从左侧滑出的抽屉 */
+  .sidebar{
+    position:fixed;left:0;top:0;bottom:0;width:246px;height:100vh;z-index:60;
+    transform:translateX(-104%);transition:transform .24s cubic-bezier(.4,0,.2,1);
+    box-shadow:none;overflow-y:auto;
+  }
+  #app.nav-open .sidebar{
+    transform:none;box-shadow:8px 0 28px rgba(4,10,24,.45);
+  }
+  /* 抽屉打开时的半透明遮罩，点一下就关 */
+  #app.nav-open .nav-mask{
+    display:block;position:fixed;inset:0;background:rgba(10,16,32,.5);
+    z-index:55;backdrop-filter:blur(1px);
+  }
+  .main{min-height:100vh}
+
+  .nav-toggle{display:inline-flex}
+  .topbar{padding:10px 14px;gap:10px}
+  .topbar h1{font-size:16px;flex:1;min-width:0;overflow:hidden;
+             text-overflow:ellipsis;white-space:nowrap}
+
+  /* 表格在窄屏横向滚动，不要把页面撑爆 */
+  .panel{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .panel table{min-width:620px}
+
+  /* 触摸目标放大，指头点得准 */
+  .btn{min-height:38px;padding:9px 16px}
+  .btn-sm{min-height:34px;padding:7px 12px}
+  /* iOS 上输入框字号 <16px 会自动放大整个页面，必须顶到 16 */
+  .input,textarea.input,select.input,input[type=text],input[type=password],
+  input[type=number]{font-size:16px}
+  .row{gap:8px}
+
+  /* 弹窗铺满可用宽度，避免右侧被切 */
+  .modal{max-width:94vw;max-height:86vh;padding:18px}
+  /* toast 挪到底部居中，别挡住右下角按钮 */
+  .toast{left:14px;right:14px;bottom:14px;text-align:center;transform:translateY(12px)}
+  .toast.show{transform:none}
+}
+
+/* ---------- ③ 560px：手机 ---------- */
+@media (max-width: 560px){
+  .content{padding:11px}
+  .topbar{padding:9px 11px}
+  .topbar h1{font-size:15px}
+  .brand-txt small{display:none}
+
+  /* 统计卡两列，再多就挤了 */
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .card{padding:12px}
+  .panel{padding:13px;border-radius:10px;margin-bottom:12px}
+  .panel h3{font-size:14px}
+  .sect-grid{grid-template-columns:1fr}
+  .sect-head h4{font-size:13.5px}
+
+  /* 按钮组横排时允许换行，避免溢出 */
+  .row{flex-wrap:wrap}
+  .row>.btn{flex:1 1 auto;min-width:108px}
+  .toolbar{flex-wrap:wrap}
+
+  /* 表格字号收一点，最小宽度也收一点 */
+  .panel table{min-width:560px;font-size:12.5px}
+  th,td{padding:7px 8px}
+
+  /* 弹窗接近全屏 */
+  .modal{max-width:100vw;width:100%;margin:0 6px;max-height:92vh;padding:15px;border-radius:12px}
+  .modal .foot{flex-wrap:wrap}
+  .modal .foot .btn{flex:1 1 auto}
+
+  /* 底部安全区（iPhone 刘海屏手势条） */
+  .toast{bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+}
+
+/* ---------- ④ 触摸设备通用优化 ---------- */
+@media (hover: none){
+  /* 触摸屏没有 hover，去掉"悬停才显形"的依赖，按钮始终可见 */
+  .btn:hover{border-color:var(--line)}
+  #nav a:hover{background:transparent}
+  #nav a.active:hover{background:var(--brand)}
+  /* 防止双击缩放 */
+  .btn,.nav-toggle,#nav a{touch-action:manipulation}
+}

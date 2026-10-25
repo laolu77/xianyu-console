@@ -1,0 +1,7 @@
+# 运行时依赖（Python 3.9+）
+playwright>=1.40.0
+pymysql>=1.0.2
+bcrypt>=4.0.0
+
+# 打包相关（仅发布者需要）
+# pyinstaller>=6.0.0

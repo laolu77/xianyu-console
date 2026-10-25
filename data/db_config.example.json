@@ -1,0 +1,17 @@
+{
+    "mode": "local",
+    "local": {
+        "host": "127.0.0.1",
+        "port": 3306,
+        "user": "root",
+        "pass": "改成本机数据库密码",
+        "db": "xianyu_autoreply"
+    },
+    "remote": {
+        "host": "换成远程库地址",
+        "port": 3306,
+        "user": "换",
+        "pass": "换",
+        "db": "xianyu_autoreply"
+    }
+}
