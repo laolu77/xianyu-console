@@ -601,7 +601,7 @@ class InstallerWizard(tk.Frame):
         tk.Label(txt, text="安装向导", bg=C["bg_surface"], fg=C["text_1"],
                  font=("Microsoft YaHei UI", 10, "bold"),
                  anchor="w").pack(anchor="w")
-        tk.Label(txt, text="闲鱼客服控制台 v1.0.0", bg=C["bg_surface"],
+        tk.Label(txt, text="闲鱼客服控制台 v2.0.1", bg=C["bg_surface"],
                  fg=C["text_3"], font=FONT_UI_SM, anchor="w").pack(anchor="w")
 
         self.stepper = Stepper(inner, self.titles)

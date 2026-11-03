@@ -384,7 +384,7 @@ try {
         case 'batch_scan':
             $path = trim((string)xy_param('path', ''));
             if ($path === '') fail('请先填写或选择工作目录');
-            $py = dirname(__DIR__) . '/runtime/python/Scripts/python.exe';
+            $py = xy_python_exe();
             $script = dirname(__DIR__) . '/tools/batch_publish.py';
             if (!is_file($script)) fail('缺少 tools/batch_publish.py');
             putenv('PYTHONIOENCODING=utf-8');
@@ -423,7 +423,7 @@ try {
             if ($path === '') fail('请先填写工作目录');
             if (!is_dir($path)) fail('目录不存在：' . $path);
             $limit = max(0, (int)xy_param('limit', 0));
-            $py = dirname(__DIR__) . '/runtime/python/Scripts/python.exe';
+            $py = xy_python_exe();
             $script = dirname(__DIR__) . '/tools/batch_publish.py';
             if (!is_file($script)) fail('缺少 tools/batch_publish.py');
 
@@ -661,7 +661,7 @@ try {
                     }
                 }
             }
-            $py = dirname(__DIR__) . '/runtime/python/Scripts/python.exe';
+            $py = xy_python_exe();
             $script = dirname(__DIR__) . '/tools/tunnel_client.py';
             $launcher = dirname(__DIR__) . '/tools/detach_run.py';
             if (!is_file($script)) fail('缺少 tools/tunnel_client.py');
@@ -920,7 +920,7 @@ try {
             $mfPath = $base . '/manifest.json';
             if (!is_file($mfPath)) fail('未找到商品信息（manifest.json）');
 
-            $py = dirname(__DIR__) . '/runtime/python/Scripts/python.exe';
+            $py = xy_python_exe();
             $script = dirname(__DIR__) . '/tools/publish_item.py';
             if (!is_file($py)) fail('未找到 Python 运行时');
             if (!is_file($script)) fail('未找到发布脚本 tools/publish_item.py');
@@ -1089,6 +1089,33 @@ try {
  *  由 product_import 导入数据库后即完成使命）。相对软件根目录（frontend 的上级）。 */
 function xy_data_dir() {
     return realpath(__DIR__ . '/../data') ?: (__DIR__ . '/../data');
+}
+
+/**
+ * 定位内置 Python 解释器。
+ *
+ * 【必须覆盖两种目录布局】（2026-11-03 用户实测：内网穿透启动失败，弹
+ *   `D://咸鱼//XianyuConsole//runtime//python//pythonw.exe 不是内部或外部命令`）
+ *   · 独立 Python：runtime/python/python.exe        ← 安装包里打的是这种
+ *   · venv      ：runtime/python/Scripts/python.exe ← 开发机上是这种
+ * 原来这里四处都写死成 venv 版路径，装到用户机器上自然找不到解释器，
+ * 表现为「内网穿透 / 批量上传 启动失败」，而在开发机上完全正常。
+ * 与 app_launcher._find_python() 保持一致，别再各写一套。
+ */
+function xy_python_exe() {
+    $root = dirname(__DIR__);
+    foreach ([
+        '/runtime/python/python.exe',          // 独立 Python（安装包）
+        '/runtime/python/pythonw.exe',         // 独立 Python 的免控制台版
+        '/runtime/python/Scripts/python.exe',  // venv（开发机）
+        '/runtime/python/bin/python',          // venv（POSIX 布局）
+    ] as $rel) {
+        if (is_file($root . $rel)) {
+            return $root . $rel;
+        }
+    }
+    fail('找不到内置 Python 解释器，安装包可能不完整：'
+         . '已查找 runtime/python/python.exe 与 runtime/python/Scripts/python.exe');
 }
 
 /**

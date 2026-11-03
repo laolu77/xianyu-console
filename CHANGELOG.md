@@ -1,5 +1,23 @@
 # 更新记录
 
+## 2.0.1 — 2026-11-03
+
+### 新增
+
+- 安装包拆成两份：`XianyuSetup-Full.exe`（离线，约 110MB）与 `XianyuSetup.exe`
+  （约 12MB，安装时从服务器下载 payload.zip）。一键打包：
+  `python tools/build_release.py`；下载地址可用 exe 同目录的 `payload_url.txt` 覆盖。
+
+### 修复
+
+- **内网穿透启动失败**（用户实测报 `runtime\python\pythonw.exe 不是内部或外部命令`）：
+  `api.php` 里 4 处把 Python 解释器路径写死成 `runtime/python/Scripts/python.exe`
+  ——那是开发机的 venv 布局，而安装包里打的是独立 CPython
+  （`runtime/python/python.exe`，没有 `Scripts` 目录），装到用户机器上必然找不到。
+  新增 `xy_python_exe()` 统一探测（python.exe → pythonw.exe → Scripts/python.exe → bin/python），
+  内网穿透、批量上传（两处入口）、数据库备份全部改用它。
+  与 `app_launcher._find_python()` 保持同一套候选顺序。
+
 ## 2.0.0 — 2026-11-03
 
 发货链路重写。1.x 靠"昵称"找买家会话，昵称解析错就永远发不出卡密；

@@ -68,6 +68,86 @@ def payload_zip() -> Path:
     return _HERE / "payload.zip"
 
 
+# ---------------------------------------------------------------------------
+# 小安装包模式：安装包内容（payload.zip，约 100MB）放在服务器上，exe 只有几 MB。
+#   下载地址优先级：exe 同目录的 payload_url.txt > 内置 PAYLOAD_URL
+#   这样换服务器/换版本不用重新打 exe，改一个 txt 就行。
+# ---------------------------------------------------------------------------
+PAYLOAD_URL = "http://124.221.253.153/xianyu/payload.zip"
+
+
+def payload_url() -> str:
+    """取安装包下载地址（允许用同名 txt 覆盖内置地址）。"""
+    dirs = []
+    if getattr(sys, "frozen", False):
+        dirs.append(Path(sys.executable).resolve().parent)
+    dirs.append(_HERE)
+    for d in dirs:
+        f = d / "payload_url.txt"
+        try:
+            if f.is_file():
+                t = f.read_text(encoding="utf-8", errors="replace").strip()
+                if t.startswith(("http://", "https://")):
+                    return t
+        except OSError:
+            continue
+    return PAYLOAD_URL
+
+
+def download_payload(progress) -> Path:
+    """下载 payload.zip 到临时目录并校验，返回本地路径。
+
+    progress(ratio[0-1], text) 用于刷新界面进度。
+    失败自动重试 3 次（间隔递增），仍然失败就抛异常，让界面上报明确原因
+    —— 绝不静默继续（否则会在解压阶段报一个更难懂的错）。
+    """
+    import urllib.request
+
+    url = payload_url()
+    if not url:
+        raise RuntimeError("没有配置安装包下载地址（payload_url.txt 或内置 PAYLOAD_URL）")
+    dst = Path(os.environ.get("TEMP") or ".") / "xianyu_payload.zip"
+    last = None
+    for attempt in range(1, 4):
+        try:
+            if dst.exists():
+                dst.unlink()
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "XianyuSetup/2.0",
+                "Accept": "*/*",
+            })
+            with urllib.request.urlopen(req, timeout=30) as r:
+                total = int(r.headers.get("Content-Length") or 0)
+                got = 0
+                with open(dst, "wb") as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        got += len(chunk)
+                        if total:
+                            ratio = min(0.99, got / total)
+                            progress(ratio, "正在下载安装包… %d%%（%.1f/%.1f MB）"
+                                     % (got * 100 // total, got / 1048576,
+                                        total / 1048576))
+                        else:
+                            progress(0.5, "正在下载安装包… %.1f MB" % (got / 1048576))
+            if total and got != total:
+                raise IOError("下载不完整（%d/%d 字节）" % (got, total))
+            if got < 10 * 1024 * 1024:
+                raise IOError("文件过小（%.1f MB），可能下到了错误页" % (got / 1048576))
+            with zipfile.ZipFile(dst) as z:
+                bad = z.testzip()
+                if bad:
+                    raise IOError("压缩包损坏：%s" % bad)
+            return dst
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            time.sleep(1.5 * attempt)
+    raise RuntimeError("从 %s 下载失败：%s" % (url, last))
+
+
 def is_installed(dst: Path) -> bool:
     return (dst / "runtime" / "php" / "php.exe").is_file() and \
            (dst / "frontend" / "index.php").is_file()
@@ -547,13 +627,32 @@ class SetupApp:
     def _worker(self):
         try:
             cfg = self.cfg
-            self.q.put(("prog", 3, "正在创建数据库…"))
+
+            # ① 安装包内容先就位。
+            # 大安装包（100MB）不适合塞进 exe：一是体积，二是每次更新都要重下整个包。
+            # 小安装包模式下载的是服务器上的 payload.zip；如果用户把 payload.zip
+            # 放在 exe 同目录（离线安装），就直接用本地那份，不走网络。
+            local = payload_zip()
+            if local.is_file():
+                src_zip = local
+            else:
+                self.q.put(("prog", 1, "正在连接下载服务器…"))
+                try:
+                    src_zip = download_payload(
+                        lambda r, t: self.q.put(("prog", 2 + int(r * 6), t)))
+                except Exception as exc:  # noqa: BLE001
+                    self.q.put(("err", "下载安装包失败",
+                                "%s\n\n可以手动把 payload.zip 放到安装包同一目录后重试。"
+                                % exc))
+                    return
+
+            self.q.put(("prog", 8, "正在创建数据库…"))
             ensure_database(cfg)
 
-            self.q.put(("prog", 8, "数据库就绪，开始释放文件…"))
+            self.q.put(("prog", 10, "数据库就绪，开始释放文件…"))
             dst = self.dst
             dst.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(payload_zip()) as z:
+            with zipfile.ZipFile(src_zip) as z:
                 infos = z.infolist()
                 total = len(infos)
                 for i, info in enumerate(infos, 1):

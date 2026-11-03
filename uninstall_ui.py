@@ -348,7 +348,7 @@ def run_gui() -> int:
     w, h = 700, 750
     root.geometry("%dx%d+%d+%d" % (w, h, (sw - w) // 2, max(30, (sh - h) // 3)))
 
-    un = Uninstaller(root, install_dir=str(BASE), version="v1.0.0")
+    un = Uninstaller(root, install_dir=str(BASE), version="v2.0.1")
     un.set_install_dir(str(BASE))
 
     def fit_window():

@@ -319,7 +319,7 @@ class ProgressBar(tk.Frame):
 class Uninstaller(tk.Frame):
     """卸载界面外壳：选范围 → 确认 → 执行（带进度）→ 结束。"""
 
-    def __init__(self, master, install_dir="", version="v1.0.0"):
+    def __init__(self, master, install_dir="", version="v2.0.1"):
         super().__init__(master, bg=C["bg_app"])
         self.master = master
         master.configure(bg=C["bg_app"])

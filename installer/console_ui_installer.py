@@ -420,7 +420,7 @@ class ConsoleUI(ttk.Frame):
                  anchor="w").pack(anchor="w")
         tk.Label(txt, text="自动回复 / 自动发货统一管理", bg=C["bg_app"],
                  fg=C["text_3"], font=FONT_UI_SM, anchor="w").pack(anchor="w")
-        v = tk.Label(bar, text=" v1.0.0 ", bg=C["ok_bg"], fg=C["ok"],
+        v = tk.Label(bar, text=" v2.0.1 ", bg=C["ok_bg"], fg=C["ok"],
                      font=FONT_UI_SM)
         v.pack(side="right")
         tk.Frame(self, bg=C["border"], height=1).pack(fill="x", pady=(12, 16))
