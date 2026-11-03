@@ -146,6 +146,32 @@ try {
             ok(['rows' => $rows]);
 
         // ---------- 店铺商品（采集/导入/绑定卡卷，2026-10-17 新增） ----------
+        case 'product_image':
+            // 商品缩略图：优先返回**本地缓存**（data/product_images/<item_id>/cover.*）。
+            // 为什么要有它：商品列表页原来直接用 img.alicdn.com 的 CDN 链接，
+            // 部署机器网络访问不了 / 加载慢时就是一片空白（2026-11-03 用户截图）。
+            // data/ 在 web 根目录之外，浏览器访问不到，所以用这个端点代理输出。
+            $iid = preg_replace('/[^0-9A-Za-z]/', '', (string)($_GET['item_id'] ?? ''));
+            if ($iid === '') {
+                http_response_code(400);
+                exit;
+            }
+            $base = dirname(__DIR__) . '/data/product_images/' . $iid;
+            foreach (array('cover.webp', 'cover.jpg', 'cover.png') as $fn) {
+                $f = $base . '/' . $fn;
+                if (!is_file($f)) continue;
+                $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+                $mimes = array('webp' => 'image/webp', 'jpg' => 'image/jpeg',
+                               'jpeg' => 'image/jpeg', 'png' => 'image/png');
+                header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
+                header('Cache-Control: public, max-age=86400');
+                header('Content-Length: ' . filesize($f));
+                readfile($f);
+                exit;
+            }
+            http_response_code(404);
+            exit;
+
         case 'shop_items':
             $rows = xy_all("SELECT * FROM shop_items ORDER BY id DESC");
             foreach ($rows as &$r) {

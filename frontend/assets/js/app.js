@@ -411,9 +411,25 @@
 
     shopitems() {
       api('shop_items').then(d => {
+        // 缩略图取图顺序：本地缓存（img.php）→ 阿里 CDN → 隐藏。
+        // 只挂 CDN 的话，部署机器访问不了 img.alicdn.com 就整列空白，
+        // 而且不会显示"无图"，看着像 bug（2026-11-03 用户反馈）。
+        const thumb = (s) => {
+          const cdn = esc(s.img || '');
+          if (s.item_id) {
+            return `<img class="thumb" loading="lazy" referrerpolicy="no-referrer"
+              src="img.php?item_id=${esc(String(s.item_id))}"
+              data-cdn="${cdn}"
+              onerror="var c=this.dataset.cdn;if(c&&this.src.indexOf(c)<0){this.src=c;}else{this.style.visibility='hidden';}">`;
+          }
+          return cdn
+            ? `<img class="thumb" loading="lazy" referrerpolicy="no-referrer" src="${cdn}"
+                 onerror="this.style.visibility='hidden'">`
+            : '<span class="muted">无图</span>';
+        };
         const rows = (d.rows || []).map(s => `
           <tr>
-            <td class="nowrap">${s.img ? `<img class="thumb" src="${esc(s.img)}" alt="">` : '<span class="muted">无图</span>'}</td>
+            <td class="nowrap">${thumb(s)}</td>
             <td>${esc(s.title)}${s.is_physical == 1 ? ' <span class="tag gray">实物</span>' : ''}</td>
             <td class="nowrap">${esc(s.price || '-')}${s.origin_price ? `<br><span class="muted" style="text-decoration:line-through;font-size:12px">${esc(s.origin_price)}</span>` : ''}</td>
             <td class="desc-clamp" title="${esc(s.descr || '')}">${esc((s.descr || '').slice(0, 60)) || '<span class="muted">—</span>'}</td>

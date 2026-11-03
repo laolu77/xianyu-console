@@ -201,23 +201,28 @@ def make_shortcut(dst: Path) -> None:
             f'"{dst}\\runtime\\php\\php.exe" -S 127.0.0.1:{BASE_PORT} -t "{dst}\\frontend"\r\n',
             encoding="utf-8", errors="ignore")
 
-    # 卸载入口：bat 只做转发（纯 ASCII 避免乱码），中文提示由 uninstall.py 输出
-    uninst_bat = dst / "卸载程序.bat"
-    uninst_bat.write_text(
-        "@echo off\r\n"
-        "chcp 65001 > nul\r\n"
-        "title Uninstall\r\n"
-        f'"{dst}\\runtime\\python\\python.exe" "{dst}\\uninstall.py"\r\n'
-        "if errorlevel 1 pause\r\n",
-        encoding="ascii", errors="ignore")
+    # 卸载入口放在**安装根目录**：优先独立图形卸载程序（XianyuUninstall.exe，
+    # 深色 UI、带进度）；只有 exe 缺失时才退回 bat + uninstall.py（命令行版）。
+    uninst_exe = dst / "XianyuUninstall.exe"
+    if not uninst_exe.is_file():
+        uninst_bat = dst / "卸载程序.bat"
+        uninst_bat.write_text(
+            "@echo off\r\n"
+            "chcp 65001 > nul\r\n"
+            "title Uninstall\r\n"
+            f'"{dst}\\runtime\\python\\python.exe" "{dst}\\uninstall.py"\r\n'
+            "if errorlevel 1 pause\r\n",
+            encoding="ascii", errors="ignore")
 
     home = Path(os.environ.get("USERPROFILE", "C:/"))
     menu = Path(os.environ.get("APPDATA", "C:/")) / "Microsoft/Windows/Start Menu/Programs"
     target = console_exe if console_exe.is_file() else starter
+    # 卸载程序**只放在安装根目录**（XianyuUninstall.exe），不建桌面/开始菜单入口
+    # —— 卸载是低频操作，桌面上多一个"卸载"图标容易被误点；
+    # 需要卸载时进安装目录双击即可（2026-11-03 用户要求）。
     pairs = [
         (home / "Desktop" / f"{APP_TITLE}.lnk", target, ""),
         (menu / f"{APP_TITLE}.lnk", target, ""),
-        (menu / f"卸载 {APP_TITLE}.lnk", uninst_bat, ""),
     ]
     ps = "$ws = New-Object -ComObject WScript.Shell; " + "".join(
         f'$s = $ws.CreateShortcut("{lnk}"); '
@@ -538,6 +543,7 @@ class SetupApp:
         self.prog.pack(fill="both", expand=True)
         self.prog.set_progress(1, "准备中…")
 
+
     def _worker(self):
         try:
             cfg = self.cfg
@@ -559,6 +565,15 @@ class SetupApp:
             self.q.put(("prog", 94, "正在写入配置…"))
             write_configs(dst, cfg)
 
+            # 装的时候就把表建好并校验：不再等引擎首次启动才建，
+            # 否则一旦建表链路有问题，用户只会看到"引擎启动后立即退出"。
+            self.q.put(("prog", 95, "正在创建数据表…"))
+            schema_ok, schema_msg = init_schema(dst, cfg)
+            if not schema_ok:
+                self.q.put(("err", "数据表创建失败", schema_msg))
+                return
+            self._schema_msg = schema_msg
+
             self.q.put(("prog", 97, "正在创建桌面快捷方式…"))
             make_shortcut(dst)
 
@@ -566,6 +581,7 @@ class SetupApp:
                 ("安装目录", str(dst)),
                 ("数据库", f"{cfg['db_user']}@{cfg['db_host']}:{cfg['db_port']}"
                           f"/{cfg['db_name']}"),
+                ("数据表", schema_msg),
                 ("登录账号", "admin"),
                 ("访问地址", f"http://127.0.0.1:{BASE_PORT}"),
             ]))
@@ -600,6 +616,68 @@ class SetupApp:
     def run(self) -> int:
         self.root.mainloop()
         return 0
+
+
+def init_schema(dst, cfg):
+    """用 frontend/init.sql 建表（幂等：脚本内全是 CREATE TABLE IF NOT EXISTS）。
+
+    为什么要在**安装阶段**就建表：
+    原来建表完全依赖引擎首次启动时自己跑 init.sql，一旦那条链路有问题
+    （比如脚本路径算错、注释切分把语句吞掉），用户看到的就是
+    "装完打不开、引擎一启动就崩"，且错误埋在日志里。
+    装的时候就建好并校验，问题能立刻暴露在向导界面上。
+
+    Args:
+        dst: 安装目录（含 frontend/init.sql）
+        cfg: 数据库连接配置字典（db_host/db_port/db_user/db_pass/db_name）
+
+    Returns:
+        (是否成功, 说明文字)
+    """
+    import re as _re
+
+    sql_file = dst / "frontend" / "init.sql"
+    if not sql_file.is_file():
+        return False, "找不到建表脚本：%s" % sql_file
+    try:
+        sql = sql_file.read_text(encoding="utf-8")
+        # 先剥 `--` 行注释再按 ';' 切分，否则"注释 + 建表"整段会被当注释丢掉
+        sql = _re.sub(r"^\s*--[^\n]*$", "", sql, flags=_re.M)
+        stmts = [s.strip() for s in sql.split(";") if s.strip()]
+
+        import pymysql
+        conn = pymysql.connect(
+            host=cfg["db_host"], port=int(cfg["db_port"]),
+            user=cfg["db_user"], password=cfg["db_pass"],
+            database=cfg["db_name"], charset="utf8mb4",
+            autocommit=True, connect_timeout=6)
+        try:
+            with conn.cursor() as cur:
+                for st in stmts:
+                    try:
+                        cur.execute(st)
+                    except Exception:
+                        pass          # 已存在等可忽略
+                cur.execute("SELECT COUNT(*) FROM information_schema.tables "
+                            "WHERE table_schema = DATABASE()")
+                n_tables = int(cur.fetchone()[0])
+                cur.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'settings'")
+                cols = {row[0] for row in cur.fetchall()}
+        finally:
+            conn.close()
+
+        need = {"batch_interval_min", "batch_daily_max",
+                "scan_enabled", "login_guard_enabled"}
+        missing = need - cols
+        if missing:
+            return False, "建了 %d 张表，但 settings 缺列：%s" % (
+                n_tables, ", ".join(sorted(missing)))
+        if n_tables < 10:
+            return False, "只建出 %d 张表（应 >= 13）" % n_tables
+        return True, "已建 %d 张表，settings 列齐全" % n_tables
+    except Exception as exc:
+        return False, "%s: %s" % (type(exc).__name__, exc)
 
 
 def main() -> int:

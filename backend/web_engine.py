@@ -506,6 +506,163 @@ def _parse_order_block(text: str) -> tuple[str, str]:
 _IM_DESKTOP_URL = ("https://seller.goofish.com/?site=COMMONPRO#/im-desktop")
 
 
+def open_chat_by_order(engine: XianyuIMEngine, oid: str,
+                       timeout: float = 12.0) -> bool:
+    """用订单号在订单管理页点「联系ta」，直接打开该订单的聊天会话。
+
+    为什么这是最优路径（2026-11-03 实测）：
+    点「联系ta」后平台打开的是
+        #/im?itemId=...&orderId=<订单号>&peerUserId=<买家ID>
+    **订单号就在 URL 里**，这个"订单↔会话"对应关系是平台自己生成的：
+      · 不依赖买家昵称解析（`_BUYER_RE` 抓错也不影响）
+      · 不依赖商品标题（`_TITLE_RE` 要求"待发货"，已发货订单解析为空）
+      · 平台保证对应关系 → 从根上不可能发错人
+
+    旧实现（`open_conversation_for_order`）必须按昵称先筛出候选会话，
+    昵称错一个字符就直接 return False，于是"能点发货、却永远发不出卡密"。
+    "去发货"之所以一直成功，是因为它只用 orderId 拼 URL、不需要知道买家是谁。
+
+    Args:
+        engine: 引擎实例（需要可用浏览器）。
+        oid: 目标订单号。
+        timeout: 等待聊天页出现的最长秒数。
+
+    Returns:
+        True 表示已成功切到该订单的聊天页（`engine._page` 已指向它）。
+    """
+    oid = str(oid or "")
+    if not oid:
+        return False
+
+    # 找任意一个已登录的卖家工作台页面（**不要用 _seller_page**：它会优先返回
+    # 订单详情页/聊天页；而这里只需要一个能导航的 SPA 壳）
+    browser = getattr(engine, "_browser", None)
+    sp = None
+    if browser is not None:
+        for c in browser.contexts:
+            for p in c.pages:
+                u = p.url or ""
+                if "seller.goofish.com" in u and "#/login" not in u:
+                    sp = p
+                    break
+            if sp is not None:
+                break
+    if sp is None:
+        log("WARN", f"  [联系ta] 找不到卖家工作台标签页，订单 {oid}")
+        return False
+
+    # 1) 切到订单管理页。
+    #    【坑】这些路由只是同一个 SPA 的 hash（#/im → #/seller-trade/order-manage），
+    #    page.goto() 对"仅 hash 不同"的 URL **不会触发整页导航**，SPA 也可能不响应，
+    #    结果页面还停在聊天页、一个「联系ta」按钮都找不到（2026-11-03 实测）。
+    #    所以 goto 之后必须校验 URL，没变就改用 JS 直接改 hash 再等渲染。
+    try:
+        if "order-manage" not in (sp.url or ""):
+            sp.goto(ORDER_MANAGE_URL, wait_until="domcontentloaded", timeout=20000)
+            time.sleep(2.0)
+            if "order-manage" not in (sp.url or ""):
+                sp.evaluate("location.hash = '#/seller-trade/order-manage'")
+                time.sleep(2.5)
+        if "order-manage" not in (sp.url or ""):
+            log("WARN", f"  [联系ta] 没能切到订单管理页（当前 {sp.url}）")
+            return False
+    except Exception as exc:  # noqa: BLE001
+        log("WARN", f"  [联系ta] 打开订单管理页失败: {exc}")
+        return False
+
+    # 订单列表是异步加载的：等到真的出现「联系ta」按钮再点，避免空列表误判
+    for _ in range(10):
+        try:
+            n = sp.eval_on_selector_all(
+                "button, .ant-btn, [role=button]",
+                "els => els.filter(e => (e.innerText||'').trim() === '联系ta').length")
+        except Exception:  # noqa: BLE001
+            n = 0
+        if n:
+            break
+        time.sleep(1.0)
+
+    # 2) 从订单行里**直接读「联系ta」的 href**，不点它。
+    #    实测它的真实结构是：
+    #      <a href="https://seller.goofish.com/?site=COMMONPRO#/im
+    #                ?itemId=...&orderId=<订单号>&peerUserId=<买家ID>">
+    #        纸夜夜夜 联系ta
+    #      </a>
+    #    也就是"联系ta"本身就是个链接，href 由平台生成、里面带 orderId。
+    #    比点击可靠得多：
+    #      · 不需要 React 响应事件（合成 click 实测无效，真实鼠标点击也不稳）
+    #      · 不需要坐标（页面滚动/遮挡都不影响）
+    #      · href 里的 orderId 可以**校验**，从根上保证不发错人
+    #
+    #    注意：订单管理页是 ant-table，**每个订单占两行 <tr>**：
+    #      第 1 行 = 已发货/订单编号/下单时间；第 2 行 = 商品/买家/按钮。
+    #      所以要从"含订单号那一行"的**下一个兄弟行**里找链接。
+    href = ""
+    for attempt in range(3):
+        try:
+            href = sp.evaluate(r"""
+            (oid) => {
+              let infoRow = null;
+              for (const tr of document.querySelectorAll('tr')) {
+                if ((tr.textContent || '').indexOf(oid) >= 0) { infoRow = tr; break; }
+              }
+              if (!infoRow) return '';
+              const scan = (root) => {
+                for (const a of root.querySelectorAll('a[href]')) {
+                  const h = a.getAttribute('href') || '';
+                  if (h.indexOf('orderId=' + oid) >= 0) return h;
+                }
+                return '';
+              };
+              return scan(infoRow.nextElementSibling || infoRow) || scan(infoRow);
+            }
+            """, oid) or ""
+        except Exception as exc:  # noqa: BLE001
+            log("WARN", f"  [联系ta] 读取聊天链接异常（第 {attempt+1} 次）: {exc}")
+            href = ""
+        if href:
+            break
+        time.sleep(1.5)          # 列表可能还没渲染出这笔订单
+
+    if not href:
+        log("WARN", f"  [联系ta] 订单 {oid} 所在行里没有带 orderId 的聊天链接")
+        return False
+
+    # 3) 校验 + 跳转。href 里的 orderId 必须是目标订单，否则宁可不跳
+    #    （列表里行与行挨得近，取错链接就等于发错人）
+    if f"orderId={oid}" not in href:
+        log("WARN", f"  [联系ta] 链接里的订单号与目标不符，拒绝跳转：{href[:90]}")
+        return False
+
+    if href.startswith("#"):
+        href = "https://seller.goofish.com/?site=COMMONPRO" + href
+    try:
+        sp.goto(href, wait_until="domcontentloaded", timeout=20000)
+    except Exception as exc:  # noqa: BLE001
+        log("WARN", f"  [联系ta] 跳转聊天页失败: {exc}")
+        return False
+
+    # 4) 等聊天页就位：URL 带目标订单号 + 出现输入框，才交还给发卡密
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.4)
+        if f"orderId={oid}" in (sp.url or ""):
+            try:
+                ready = sp.evaluate(
+                    "() => { const b = document.querySelector("
+                    "'[class*=\"sendbox\"] textarea'); "
+                    "return !!(b && b.getBoundingClientRect().width > 0); }")
+            except Exception:  # noqa: BLE001
+                ready = False
+            if ready:
+                engine._page = sp
+                log("INFO", f"  [联系ta] 已打开订单 {oid} 的聊天会话")
+                return True
+
+    log("WARN", f"  [联系ta] 跳转后没等到 orderId={oid} 的聊天输入框")
+    return False
+
+
 def _seller_page(engine: XianyuIMEngine):
     """找登录态的卖家工作台标签页（seller.goofish.com 且非 #/login）。
 
@@ -621,22 +778,31 @@ def resend_undelivered(engine: XianyuIMEngine) -> int:
         if not bundle:
             log("WARN", f"  [卡密补发] 订单 {oid} 商品「{title}」未绑定卡卷，无法补发")
             continue
+        # 优先用订单号点「联系ta」（不依赖昵称），失败再回退按昵称定位
+        opened = False
         try:
-            sp = _seller_page(engine)
-            if sp is not None:
-                if "im-desktop" not in (sp.url or ""):
-                    sp.goto(_IM_DESKTOP_URL, wait_until="domcontentloaded",
-                            timeout=20000)
-                    time.sleep(2)
-                engine._page = sp
-            engine.find_chat_page()
-            if not engine.open_conversation_for_order(buyer, oid,
-                                                     title_hint=title):
-                log("WARN", f"  [卡密补发] 订单 {oid} 未找到「{buyer}」的对应商品话题，"
-                            f"本轮不发，下轮重试（绝不发错人）")
-                continue
+            opened = open_chat_by_order(engine, oid)
         except Exception as exc:  # noqa: BLE001
-            log("WARN", f"  [卡密补发] 订单 {oid} 打开会话失败: {exc}")
+            log("WARN", f"  [卡密补发] 订单 {oid} 走「联系ta」异常: {exc}")
+        if not opened and buyer:
+            try:
+                sp = _seller_page(engine)
+                if sp is not None:
+                    if "im-desktop" not in (sp.url or ""):
+                        sp.goto(_IM_DESKTOP_URL, wait_until="domcontentloaded",
+                                timeout=20000)
+                        time.sleep(2)
+                    engine._page = sp
+                engine.find_chat_page()
+                opened = engine.open_conversation_for_order(
+                    buyer, oid, title_hint=title)
+                if opened:
+                    log("INFO", f"  [卡密补发] 订单 {oid} 回退按昵称定位成功")
+            except Exception as exc:  # noqa: BLE001
+                log("WARN", f"  [卡密补发] 回退按昵称定位失败: {exc}")
+        if not opened:
+            log("WARN", f"  [卡密补发] 订单 {oid} 两种方式都没打开会话，"
+                        f"本轮不发，下轮重试（绝不发错人）")
             continue
         log("INFO", f"  [卡密补发] 订单 {oid} 正在补发卡密给「{buyer}」…")
         ok = _deliver(engine, buyer, f"[卡密补发 {oid}]",
@@ -719,29 +885,38 @@ def ship_pending_from_manage(engine: XianyuIMEngine) -> int:
                                        order_id=oid, status="failed",
                                        note="未绑定卡卷")
             continue
-        # 3) 切回 IM 会话，把卡密发给买家。
-        # 平台确认/读单会把工作台 SPA 路由带走（order-manage/order-detail），
-        # 而 IM 会话列表只在 #/im-desktop 路由渲染——先路由回聊天视图，
-        # 否则 find_chat_page 靠体积回退会选错页、open_conversation 找不到会话。
+        # 3) 打开该订单的聊天会话，把卡密发给买家。
+        #    **优先用订单号点「联系ta」**：平台会打开
+        #    #/im?orderId=<订单号>&peerUserId=... 的聊天页，订单号就在 URL 里，
+        #    完全不依赖昵称解析 —— 这就修掉了"每次都要等补发才能发出卡密"的病根
+        #    （旧逻辑按昵称找会话，昵称 `通知消息` 之类抓错就永远发不出去）。
+        #    失败才回退到老的按昵称定位（容错，应对「联系ta」按钮改版）。
+        opened = False
         try:
-            sp = _seller_page(engine)
-            if sp is not None:
-                if "im-desktop" not in (sp.url or ""):
-                    sp.goto(_IM_DESKTOP_URL, wait_until="domcontentloaded",
-                            timeout=20000)
-                    time.sleep(2)
-                engine._page = sp
-            engine.find_chat_page()
-            if buyer:
-                # 同名买家在列表里有多条并存话题（实测同一人 3 条，昵称与顶栏
-                # 闲鱼号完全相同，无法靠昵称区分）——按订单号/收货信息核对。
-                if not engine.open_conversation_for_order(buyer, oid,
-                                                         title_hint=title):
-                    log("WARN", f"  [订单管理] 订单 {oid} 未找到「{buyer}」的对应商品"
-                                f"话题，本轮不发卡密，下轮重试（绝不发错人）")
-                    continue
+            opened = open_chat_by_order(engine, oid)
         except Exception as exc:  # noqa: BLE001
-            log("WARN", f"  [订单管理] 切回 IM 打开「{buyer}」会话失败: {exc}")
+            log("WARN", f"  [订单管理] 订单 {oid} 走「联系ta」异常: {exc}")
+
+        if not opened and buyer:
+            try:
+                sp = _seller_page(engine)
+                if sp is not None:
+                    if "im-desktop" not in (sp.url or ""):
+                        sp.goto(_IM_DESKTOP_URL, wait_until="domcontentloaded",
+                                timeout=20000)
+                        time.sleep(2)
+                    engine._page = sp
+                engine.find_chat_page()
+                opened = engine.open_conversation_for_order(
+                    buyer, oid, title_hint=title)
+                if opened:
+                    log("INFO", f"  [订单管理] 订单 {oid} 回退按昵称定位成功")
+            except Exception as exc:  # noqa: BLE001
+                log("WARN", f"  [订单管理] 回退按昵称定位失败: {exc}")
+
+        if not opened:
+            log("WARN", f"  [订单管理] 订单 {oid} 两种方式都没打开会话，"
+                        f"本轮不发卡密，下轮重试（绝不发错人）")
             continue
         sent = _deliver(engine, buyer, f"[订单管理待发货单 {oid}]",
                         payload=bundle["content"],
@@ -954,6 +1129,41 @@ _SHIP_PENDING_REASON: dict[str, str] = {}
 _GROUP_HINTED: set[str] = set()
 
 
+def _brief_err(exc: BaseException, limit: int = 60) -> str:
+    """把 Playwright/pymysql 那种多行长报错压成一句能读的话。
+
+    【为什么需要】Playwright 的异常是一大坨多行文本（含 `Call log:` 与调用栈），
+    旧代码直接 `str(exc)[:80]` 硬截断，正好切在词中间，日志里就冒出
+    `waiting for get_by_role`` 这种**半个符号**（2026-11-03 用户截图指出
+    「多了个符号」）。这里改成：只取首行 → 去掉 Call log 之后的噪音 →
+    截断时回退到最近的空白/标点 → 清掉尾部残留的引号括号。
+    """
+    text = str(exc or "").strip()
+    if not text:
+        return type(exc).__name__
+    text = text.splitlines()[0].strip()
+    for mark in ("Call log:", "Call log", "call log:"):
+        if mark in text:
+            text = text.split(mark)[0].strip()
+    # 去掉 "Locator.click: " / "Page.goto: " 这类方法名前缀（对用户没意义）
+    text = re.sub(r"^[A-Za-z_]+\.[A-Za-z_]+:\s*", "", text)
+    # 把 Playwright 的超时原文翻成人话
+    m = re.match(r"Timeout (\d+)ms exceeded", text)
+    if m:
+        text = "等待 %g 秒仍没出现" % (int(m.group(1)) / 1000)
+    junk = " ;；,，:：-—`\"'）)】]》"
+    text = text.rstrip(junk)
+    if len(text) > limit:
+        cut = text[:limit]
+        for sep in (" ", "：", ":", "，", ",", "（", "("):
+            pos = cut.rfind(sep)
+            if pos > limit * 0.5:
+                cut = cut[:pos]
+                break
+        text = cut.rstrip(junk) + "…"
+    return text
+
+
 def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
     """在闲鱼卖家工作台完成「去发货 → 凭证弹窗什么都不填 → 确认发货」。
 
@@ -1005,10 +1215,11 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
         # 2026-10-18 x***7 订单教训：单轮裸坐标连败两次、日志只有一句
         # 「状态未变化」无任何现场证据。裸坐标在抽屉弹出动画/遮罩出现的
         # 瞬间会打到空处，重来一次大多能成；两轮都败才认输并留证。
+        round1_why = "未知原因"
         for attempt in (1, 2):
             if attempt == 2:
-                log("INFO", f"  平台发货确认: 第 1 轮失败，重载订单页重试"
-                            f" order={order_id}")
+                log("INFO", f"  平台发货确认: 第 1 轮没成功（{round1_why}），"
+                            f"重载订单页再试 order={order_id}")
                 _close_overlays(page)
                 page.goto(ORDER_DETAIL_URL.format(order_id=order_id),
                           wait_until="domcontentloaded", timeout=20000)
@@ -1024,6 +1235,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
                     break
             else:
                 if attempt == 1:
+                    round1_why = "订单详情页 12 秒内没加载出来"
                     continue  # 没切到详情视图就重载再来一轮
                 log("WARN", f"  平台发货确认: 订单页未切到详情视图 order={order_id}"
                             f"（导航异常？）")
@@ -1081,6 +1293,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
                                     f" order={order_id}: {exc} / {exc2}")
                 if not clicked:
                     if attempt == 1:
+                        round1_why = "点「免拼」按钮失败"
                         continue
                     _ship_fail_dump(page, order_id, "click_free_pin")
                     return False
@@ -1096,6 +1309,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
                     log("WARN", f"  平台发货确认: 已点「{btn_text}」，但订单"
                                 f" {order_id} 未出现「去发货」，下轮重试")
                     if attempt == 1:
+                        round1_why = "点了免拼但没出现「去发货」"
                         continue
                     return False
                 log("INFO", f"  平台发货确认: 订单 {order_id} 免拼成功，已进入待发货")
@@ -1104,6 +1318,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
                 # 状态不明：第一轮可能是陈旧渲染，重载再判一次；第二轮仍不明
                 # 才收手（绝不敢在状态不明时点按钮）。
                 if attempt == 1:
+                    round1_why = "页面状态没判明（找不到「去发货」按钮）"
                     continue
                 log("WARN", f"  平台发货确认: 订单 {order_id} 状态不明（无去发货按钮且"
                             f"文本未显示已发货），不确认")
@@ -1124,8 +1339,8 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
                     pass          # 滚动失败不影响后面的点击尝试
                 ship_btn.click(timeout=15000)
             except Exception as exc:  # noqa: BLE001
-                log("WARN", f"  平台发货确认: locator 点去发货失败 order={order_id}: "
-                            f"{str(exc)[:80]}；尝试 JS 兜底")
+                log("WARN", f"  平台发货确认: 点「去发货」按钮没成功"
+                            f"（{_brief_err(exc)}），改用 JS 兜底 order={order_id}")
                 js_ok = False
                 try:
                     js_ok = bool(page.evaluate("""() => {
@@ -1142,6 +1357,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
                                 f"{str(exc2)[:60]}")
                 if not js_ok:
                     if attempt == 1:
+                        round1_why = "「去发货」按钮点不动（点击与 JS 兜底都失败）"
                         continue
                     _ship_fail_dump(page, order_id, "click_ship_btn")
                     return False
@@ -1157,6 +1373,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
             if not ok_btn:
                 log("WARN", f"  平台发货确认: 凭证弹窗未就绪 order={order_id}")
                 if attempt == 1:
+                    round1_why = "确认弹窗没弹出来"
                     continue
                 _ship_fail_dump(page, order_id, "drawer_not_ready")
                 return False
@@ -1167,6 +1384,7 @@ def confirm_platform_shipment(engine: XianyuIMEngine, order_id: str) -> bool:
             except Exception as exc:  # noqa: BLE001
                 log("WARN", f"  平台发货确认: 点确认发货失败 order={order_id}: {exc}")
                 if attempt == 1:
+                    round1_why = "点「确认发货」没成功"
                     continue
                 _ship_fail_dump(page, order_id, "click_confirm")
                 return False
@@ -1432,8 +1650,12 @@ def handle_order(engine: XianyuIMEngine, user: str, order_text: str,
                 # 发不出去（2026-10-19 00:35 实测：一口小猫头 订单…068555）。
                 # scan_chat_paid_orders 里早有这一步，这条路径漏了。
                 try:
-                    engine.find_chat_page()
-                    if not engine.open_conversation_for_order(user, oid):
+                    # 与其他三条路径保持一致：订单号直达优先，昵称只做兜底
+                    opened = open_chat_by_order(engine, oid)
+                    if not opened:
+                        engine.find_chat_page()
+                        opened = engine.open_conversation_for_order(user, oid)
+                    if not opened:
                         log("WARN", f"  [{user}] 订单 {oid} 平台已确认，但未能回到"
                                      f"该订单所在会话，本轮不发卡密（补发队列兜底）")
                         continue
@@ -1587,14 +1809,14 @@ def _heartbeat_thread() -> None:
     等待）。语义上显示层只回答"引擎进程活着吗"——引擎真死由看门狗
     的"无进展强杀"负责，两者阈值不同、职责分离。
     """
-    import pymysql
 
     hb = None
     while True:
         time.sleep(5)
         try:
             if hb is None or not hb.open:
-                hb = pymysql.connect(**db.DB_CFG)
+                # 独占连接（带远程→本地回退），绝不碰主线程的全局连接
+                hb = db.new_conn()
             cur = hb.cursor()
             cur.execute(
                 "INSERT INTO engine_status (id, state, pid, last_heartbeat) "
@@ -1897,16 +2119,20 @@ def scan_chat_paid_orders(engine: XianyuIMEngine,
                 # 确认发货会把 SPA 路由带走，必须**回到同一个会话**再发卡密
                 # ——这就是「订单在哪个聊天框就在哪个聊天框发」的保证。
                 #
-                # 2026-10-20 修正：这里原来用 open_conversation(user, preview)，
-                # 只按昵称+预览匹配；而平台确认发货后订单卡会刷新，预览文本已变，
-                # 于是「未在列表中找到会话」→ 卡密发不出去（实测订单
-                # 3316521183005076477 平台已确认却卡在待发）。同一声明「必须按
-                # 订单号定位」的铁律，改用 open_conversation_for_order。
-                engine.find_chat_page()
-                if not engine.open_conversation_for_order(user, oid,
-                                                          title_hint=title):
-                    log("WARN", f"  [聊天订单卡扫描] 订单 {oid} 发卡密前"
-                                f"无法回到「{user}」会话，下轮重试")
+                # 定位方式演进：open_conversation(昵称+预览) → open_conversation_for_order
+                # (昵称+订单号) → 现在**订单号直达**。前两版都离不开昵称，
+                # 昵称解析错或同名多话题时就会一直失败；而此刻平台已确认发货、
+                # 订单已移出待发货列表，于是变成「钱已过户、卡密发不出去」
+                # （2026-11-03 用户日志实测：订单 5127387843588031824 卡在这里）。
+                opened = open_chat_by_order(engine, oid)
+                if not opened:
+                    # 兜底：订单管理页没找到（列表未加载/筛选不对）时，退回昵称定位
+                    engine.find_chat_page()
+                    opened = engine.open_conversation_for_order(
+                        user, oid, title_hint=title)
+                if not opened:
+                    log("WARN", f"  [聊天订单卡扫描] 订单 {oid} 发卡密前无法定位会话"
+                                f"（订单号直达与昵称均失败），下轮重试")
                     continue
             # 4) 就在当前（= 该订单所在）会话发卡密
             if engine.dry_run:
@@ -2013,9 +2239,99 @@ def scan_pending_orders(engine: XianyuIMEngine, scope: int = 0,
 
 
 # ============ 主循环 ============ #
+def count_missing_covers() -> int:
+    """统计有多少商品的本地封面还没下载。
+
+    【必须用 db.new_conn()】本函数在后台线程里跑，用全局 `db.conn()`
+    会和主线程抢同一条 pymysql 连接（串包），结束时 close() 还会把
+    主线程的连接关掉 → 引擎崩（2026-11-03 实测）。独占连接、用完自己关。
+    """
+    try:
+        c = db.new_conn()
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT item_id FROM shop_items "
+                            "WHERE item_id IS NOT NULL AND item_id <> '' "
+                            "AND img IS NOT NULL AND img <> ''")
+                ids = [str(r[0]) for r in cur.fetchall()]
+        finally:
+            c.close()
+    except Exception:  # noqa: BLE001
+        return 0
+    base = Path(__file__).resolve().parents[1] / "data" / "product_images"
+    miss = 0
+    for iid in ids:
+        d = base / iid
+        if not any((d / f"cover{e}").is_file() for e in (".webp", ".jpg", ".png")):
+            miss += 1
+    return miss
+
+
+def backfill_covers_bg() -> None:
+    """引擎启动后**在后台**补齐商品封面，不阻塞任何主流程。
+
+    为什么放在引擎而不只放在"获取商品"里：
+      · 全新安装后用户点一次「获取商品」会自动下封面（那条链路已经接了）；
+      · 但**升级安装**（数据库里已有商品、data/product_images 是空的/不全）
+        不会触发采集，网页上图片就是空白 —— 用户还得手动跑脚本，很蠢。
+    所以引擎一起来就自查一遍：缺几个就后台补几个，补失败也不影响发货
+    （前端已有"本地 → CDN → 隐藏"三级回退）。
+    """
+    def _work() -> None:
+        try:
+            # 先等 20 秒再动手：引擎刚起来时主线程要连 CDP、读设置、写心跳，
+            # 这时候再挤进来查库纯属抢资源（也是 2026-11-03 那次启动即崩的
+            # 时序背景）。补图是后台收尾，晚 20 秒没有任何影响。
+            time.sleep(20)
+            n = count_missing_covers()
+            if n <= 0:
+                return
+            log("INFO", f"[封面] 有 {n} 个商品缺本地封面，开始后台补齐…")
+            import subprocess as _sp
+            script = Path(__file__).resolve().parents[1] / "tools" / "download_covers.py"
+            if not script.is_file():
+                log("WARN", f"[封面] 找不到 {script}，跳过")
+                return
+            r = _sp.run([sys.executable, str(script)],
+                        capture_output=True, text=True, timeout=1800,
+                        encoding="utf-8", errors="replace")
+            out = (r.stdout or "").strip().splitlines()
+            # 取「完成：下载 x，跳过 y，失败 z」那一行，比最后一行有信息量
+            line = next((x for x in reversed(out) if x.startswith("完成：")), "")
+            line = line or (out[-1] if out else "")
+            left = count_missing_covers()
+            if left == 0:
+                log("INFO", f"[封面] 已全部补齐（{line}）")
+            else:
+                log("WARN", f"[封面] 仍有 {left} 个缺图（{line}），下次启动会再试")
+        except Exception as exc:  # noqa: BLE001
+            log("WARN", f"[封面] 后台补图失败（不影响发货）：{exc}")
+
+    threading.Thread(target=_work, daemon=True, name="cover-backfill").start()
+
+
 def run() -> None:
     global _stop
     db.ensure_schema()
+    # 建表之后再补一次列（幂等）：覆盖三种情况——
+    #   ① init.sql 找不到（路径问题）导致一张表都没建；
+    #   ② 老库用旧版 init.sql 建过，缺后加的 batch_*/scan_*/login_guard 列；
+    #   ③ 建表中途失败留下的半成品库。
+    # 不补的话，网页一保存设置就会 Unknown column（2026-10-29 实测）。
+    try:
+        _added = db.ensure_settings_columns()
+        if _added:
+            log("INFO", f"已补齐 settings 缺失列: {', '.join(_added)}")
+    except Exception as exc:  # noqa: BLE001
+        log("WARN", f"补列失败（可能表还未建）: {exc}")
+
+    # 后台补商品封面：升级安装后库里已有商品、但本地没图时自动补，
+    # 用户不用再手动跑脚本（2026-11-03 用户要求"不能自动吗"）
+    try:
+        backfill_covers_bg()
+    except Exception as exc:  # noqa: BLE001
+        log("WARN", f"启动封面补齐失败（忽略）: {exc}")
+
     settings = db.load_settings()
     selectors = {**DEFAULT_SELECTORS, **(settings.get("selectors") or {})}
     engine = XianyuIMEngine(

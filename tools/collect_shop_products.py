@@ -359,7 +359,24 @@ def main() -> int:
     ap.add_argument("--no-details", action="store_true",
                     help="只采列表，不进每个商品详情页（快，但没有描述与图集）")
     args = ap.parse_args()
-    return collect(allow_details=not args.no_details)
+    rc = collect(allow_details=not args.no_details)
+
+    # 采集完顺手把封面图落到本地 data/product_images/。
+    # 为什么必须做：商品列表页原来直接用 img.alicdn.com 的 CDN 链接，
+    # 部署机器网络访问不了阿里 CDN 时，图片就是整片空白，而数据库里
+    # img 字段明明是完整的（2026-11-03 用户部署机实测）。
+    # 下载到本地后，网页走 api.php?action=product_image 读本地文件，不再依赖外网。
+    try:
+        import subprocess as _sp
+        import sys as _sys
+        from pathlib import Path as _Path
+        _script = _Path(__file__).resolve().parent / "download_covers.py"
+        if _script.is_file():
+            print("\n正在下载商品封面到本地…")
+            _sp.call([_sys.executable, str(_script)], timeout=900)
+    except Exception as _exc:  # noqa: BLE001
+        print(f"封面下载跳过（不影响采集结果）: {_exc}")
+    return rc
 
 
 if __name__ == "__main__":

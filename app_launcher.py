@@ -140,85 +140,6 @@ CLIENT_NAME = "闲鱼卖家客服.exe"
 # 闲鱼官方站点（原值误写成千牛 qianniu.taobao.com，用户点了不知道跳到哪）
 CLIENT_DOWNLOAD_URL = "https://www.goofish.com/"
 
-# 客户端启动成功后，自动在浏览器里后台挂一个「自己的商品详情页」。
-# 为什么要它：网页版商品页是卖家改价/下架/看评论的入口，用户习惯一直开着；
-# 每次手动找太烦，所以启动完自动开一个并最小化到任务栏（2026-10-25 用户要求）。
-AUTO_OPEN_ITEM_PAGE = True
-# 留空则自动从 shop_items 取最新的商品；填了就固定用这个 URL
-AUTO_OPEN_URL_OVERRIDE = ""
-
-
-def _find_browser() -> str | None:
-    """找 Edge / Chrome 的可执行文件（Edge 是 Win10 自带，优先）。"""
-    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-    pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
-    local = os.environ.get("LOCALAPPDATA", "")
-    for c in (
-        pf86 + r"\Microsoft\Edge\Application\msedge.exe",
-        pf + r"\Microsoft\Edge\Application\msedge.exe",
-        pf + r"\Google\Chrome\Application\chrome.exe",
-        pf86 + r"\Google\Chrome\Application\chrome.exe",
-        local + r"\Google\Chrome\Application\chrome.exe",
-    ):
-        try:
-            if c and Path(c).is_file():
-                return c
-        except OSError:
-            continue
-    return None
-
-
-def _top_windows() -> set:
-    """枚举当前可见的顶层窗口句柄（用来识别"新开出来的那个窗口"）。"""
-    try:
-        import ctypes
-        from ctypes import wintypes
-        user32 = ctypes.windll.user32
-        found = set()
-
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def _cb(hwnd, _lparam):
-            if user32.IsWindowVisible(hwnd):
-                found.add(int(hwnd))
-            return True
-
-        user32.EnumWindows(_cb, 0)
-        return found
-    except Exception:  # noqa: BLE001
-        return set()
-
-
-def open_page_background(url: str) -> bool:
-    """用浏览器打开页面，并最小化到任务栏（不抢当前焦点）。
-
-    实现要点：Chrome/Edge 的 `--start-minimized` 对 `--new-window` 并不可靠，
-    所以改成"启起来之后枚举窗口，把新增的那个 ShowWindow(SW_MINIMIZE)"。
-    """
-    if not url:
-        return False
-    before = _top_windows()
-    browser = _find_browser()
-    try:
-        if browser:
-            subprocess.Popen([browser, "--new-window", url],
-                             creationflags=NO_WINDOW, close_fds=True)
-        else:
-            os.startfile(url)          # 兜底：系统默认浏览器
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        for _ in range(12):            # 最多等 ~6 秒
-            time.sleep(0.5)
-            new = _top_windows() - before
-            if new:
-                for h in new:
-                    user32.ShowWindow(h, 6)     # SW_MINIMIZE = 6
-                return True
-    except Exception:  # noqa: BLE001
-        pass
-    return True
 
 APP_WINDOW_TITLE = "闲鱼卖家客服 · 控制台启动器"
 SINGLE_INSTANCE_MUTEX_NAME = "XianyuSellerConsole_SingleInstance_Mutex"
@@ -383,6 +304,68 @@ class Logger:
 # ----------------------------------------------------------------------------
 # 进程管理
 # ----------------------------------------------------------------------------
+def _current_db_desc() -> str:
+    """读当前数据库配置，用于在报错里显示"现在连的是哪儿"。"""
+    try:
+        import json as _json
+        d = _json.loads((DATA / "db_config.json").read_text(encoding="utf-8"))
+        mode = d.get("mode", "local")
+        c = d.get(mode) or d.get("local") or {}
+        return (f"{c.get('host', '?')}:{c.get('port', '?')} / "
+                f"库 {c.get('db', '?')} / 用户 {c.get('user', '?')}")
+    except Exception:  # noqa: BLE001
+        return "（读不到 data/db_config.json）"
+
+
+def explain_engine_failure(text: str) -> str:
+    """把引擎崩溃日志翻译成「能照着做」的中文提示。
+
+    为什么需要它：原始输出是整段 Python traceback，全是
+    `site-packages/pymysql/connections.py` 这类路径，用户看到只会一脸懵
+    （2026-11-03 用户反馈"这个报错优化一下"）。
+    这里按 MySQL 错误码 / 常见异常归类，直接给排查步骤。
+
+    Args:
+        text: 日志尾部文本（只做关键词匹配，不要求格式）
+
+    Returns:
+        多行中文提示；无法识别时返回空串，由调用方回退到原始日志。
+    """
+    t = text or ""
+    low = t.lower()
+
+    if ("2003" in t or "10061" in t or "connection refused" in low
+            or "can't connect to mysql" in low):
+        return ("MySQL 服务没有启动（或端口不对）\n"
+                f"       当前配置：{_current_db_desc()}\n"
+                "       解决：① 打开 phpStudy / 服务管理器，把 MySQL 启动起来\n"
+                "             ② 或管理员命令行执行：net start mysql\n"
+                "             ③ 确认端口还是 3306（改过就在网页「设置 → 数据库连接」改回来）")
+    if "1045" in t or "access denied" in low:
+        return ("MySQL 账号或密码不正确\n"
+                f"       当前配置：{_current_db_desc()}\n"
+                "       解决：网页「设置 → 数据库连接」里改成正确的账号密码")
+    if "1049" in t or "unknown database" in low:
+        return ("数据库不存在\n"
+                f"       当前配置：{_current_db_desc()}\n"
+                "       解决：重新运行安装程序（会自动建库并建表）")
+    if "1146" in t or "doesn't exist" in low:
+        return ("数据库里缺表\n"
+                "       解决：重启一次引擎会自动补建；仍失败请重新运行安装程序")
+    if "1054" in t or "unknown column" in low:
+        return ("数据表缺少字段\n"
+                "       解决：重启一次引擎会自动补列；仍失败请重新安装")
+    if "modulenotfounderror" in low or "no module named" in low:
+        return ("Python 运行时缺少依赖库\n"
+                "       解决：安装包不完整，请重新安装（不要只拷部分文件）")
+    if "9222" in t or "econnrefused" in low:
+        return ("连不上闲鱼客户端的调试端口 9222\n"
+                "       解决：① 控制台点「启动客户端」，等它完全登录；\n"
+                "             ② 再点启动引擎；\n"
+                "             ③ 客户端已在运行的话，用控制台重启它（必须带调试端口）")
+    return ""
+
+
 class Controller:
     def __init__(self, logger):
         self.log = logger
@@ -395,8 +378,9 @@ class Controller:
         # 启动冷却时间戳：见 monitor_loop 里的注释（防止「检测不到就重启」的风暴）
         self._last_engine_start = 0.0
         self._last_client_start = 0.0
-        # 商品页只自动开一次（自愈重启客户端时不要反复弹窗口）
-        self._auto_page_opened = False
+        # 客户端连续启动失败次数：超过阈值就停止自动重试，
+        # 否则会陷入"杀进程→重启→仍不通→再杀"的循环（2026-10-29）
+        self._client_fail_count = 0
 
     # ---- 网页 ----
     def start_web(self):
@@ -475,9 +459,17 @@ class Controller:
                     detail = " / ".join(x.strip() for x in tail if x.strip())
                 except Exception:  # noqa: BLE001
                     detail = ""
-                self.log.log("引擎启动后立即退出："
-                             + (detail[-400:] if detail else "详情见 data/logs/engine.log"),
-                             "ERROR")
+                # 先尝试把错误"翻译"成能照着做的中文；识别不了才回退原始日志
+                hint = explain_engine_failure(detail)
+                if hint:
+                    for i, line in enumerate(hint.splitlines()):
+                        self.log.log(line, "ERROR" if i == 0 else "INFO")
+                    self.log.log("完整日志：data/logs/engine.log", "INFO")
+                else:
+                    self.log.log("引擎启动后立即退出："
+                                 + (detail[-300:] if detail
+                                    else "详情见 data/logs/engine.log"),
+                                 "ERROR")
                 return
             time.sleep(0.5)
         self.log.log("引擎已启动，但心跳尚未上报（可能在等客户端连上 9222）",
@@ -551,45 +543,6 @@ class Controller:
                 continue
         return None
 
-    def _item_page_url(self) -> str:
-        """拼出「自己的商品详情页」网址。
-
-        优先 AUTO_OPEN_URL_OVERRIDE；否则从 shop_items 取最新的一个商品
-        （用户说"随便找一个我的商品页面就行"）。
-        """
-        if AUTO_OPEN_URL_OVERRIDE:
-            return AUTO_OPEN_URL_OVERRIDE
-        try:
-            c = self._db()
-            if c:
-                with c.cursor() as cur:
-                    cur.execute(
-                        "SELECT item_id FROM shop_items "
-                        "WHERE item_id IS NOT NULL AND item_id <> '' "
-                        "ORDER BY id DESC LIMIT 1")
-                    row = cur.fetchone()
-                    if row and row[0]:
-                        return f"https://www.goofish.com/item?id={row[0]}"
-        except Exception:  # noqa: BLE001
-            pass
-        return "https://www.goofish.com/"
-
-    def _maybe_open_item_page(self) -> None:
-        """客户端就绪后，在浏览器后台挂一个商品页（只做一次）。"""
-        if not AUTO_OPEN_ITEM_PAGE or self._auto_page_opened:
-            return
-        self._auto_page_opened = True
-        url = self._item_page_url()
-
-        def worker():
-            ok = open_page_background(url)
-            if ok:
-                self.log.log(f"已在后台打开商品页（已最小化）：{url}")
-            else:
-                self.log.log(f"商品页打开失败：{url}", "WARN")
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def set_client_dir(self, path: str) -> bool:
         """手动指定客户端目录：校验后写进 data/client_path.txt。"""
         try:
@@ -612,15 +565,69 @@ class Controller:
         except Exception:  # noqa: BLE001
             return False
 
+    def _kill_existing_clients(self) -> int:
+        """结束所有已在运行的闲鱼客户端进程，返回结束的数量。
+
+        【为什么必须杀】Electron 客户端是**单实例**应用：如果已经有一个实例在跑
+        （典型是用户自己双击打开的，**没带** --remote-debugging-port），我们再
+        启动带端口的实例时，新进程会把启动参数转交给旧实例、然后自己退出。
+        结果就是：9222 永远没人监听 → is_client_up() 一直 False →
+        控制台认为"未运行"并反复重启，而任务管理器里客户端明明开着。
+        （2026-10-29 用户实测："显示已启动，下一秒又变未运行，日志一直重试"）
+
+        原代码的写法正好相反：`if self.is_client_up(): self.stop_client()` ——
+        只有端口通时才去重启（把好实例杀掉），端口不通时反而不清理。
+        """
+        killed = 0
+        try:
+            import psutil
+            for p in psutil.process_iter(["pid", "name"]):
+                name = (p.info.get("name") or "")
+                if "闲鱼" in name and "客服" in name:
+                    try:
+                        p.kill()
+                        killed += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            # psutil 不可用时退回 taskkill（中文进程名可能有编码坑，尽力而为）
+            try:
+                subprocess.call(["taskkill", "/F", "/IM", "闲鱼卖家客服.exe"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=NO_WINDOW)
+                killed = 1
+            except Exception:  # noqa: BLE001
+                pass
+        # 等进程真正退出、单实例锁释放，否则新实例仍会被旧锁挡掉
+        for _ in range(10):
+            time.sleep(0.5)
+            try:
+                import psutil
+                still = [p for p in psutil.process_iter(["name"])
+                         if "闲鱼" in (p.info.get("name") or "")
+                         and "客服" in (p.info.get("name") or "")]
+                if not still:
+                    break
+            except Exception:  # noqa: BLE001
+                break
+        return killed
+
     def start_client(self):
         exe = self.find_client_exe()
         if not exe:
             self.log.log("未找到闲鱼卖家客服，无法启动", "ERROR")
             return False
-        # 若已运行但没带调试端口，先结束再重启
+        # ① 端口已通 = 有个带调试端口的实例在正常工作 → 直接复用，不要重启
         if self.is_client_up():
-            self.stop_client()
-            time.sleep(2)
+            self.log.log(f"客户端已在运行且 {CDP_PORT} 可连接，无需重启")
+            return True
+        # ② 端口不通 → 可能有个"没带调试端口"的实例占着单实例锁，必须先清掉
+        killed = self._kill_existing_clients()
+        if killed:
+            self.log.log(f"已结束 {killed} 个旧的客户端进程"
+                         f"（避免单实例抢占调试端口），重新带端口启动")
+        else:
+            time.sleep(1)
         try:
             # 启动配方必须与 backend/launch_app.py（前台驻留版，经过实战）
             # 和 backend/export_messages.py 保持一致，缺一不可（2026-10-18 实测：
@@ -654,8 +661,9 @@ class Controller:
             for _ in range(60):          # 最多等 30 秒
                 if self.is_client_up():
                     self.log.log(f"客户端调试端口 {CDP_PORT} 已就绪")
-                    # 确认客户端真的起来了，再挂商品页（避免白开一个空白窗）
-                    self._maybe_open_item_page()
+                    # 不再自动打开商品页：闲鱼客户端是封闭的单窗口 IM 应用，
+                    # window.open 被它转交给系统浏览器（打开的是未登录的买家视角），
+                    # CDP Target.createTarget 也被拒绝。用户 2026-11-03 明确要求关掉。
                     return True
                 if self.client_proc.poll() is not None:
                     self.log.log("客户端启动后立即退出，详情见 data/logs/client_boot.log",
@@ -933,16 +941,29 @@ class Controller:
                 # 客户端
                 want_client = self.get_control("client", "")
                 if want_client == "run":
-                    if not self.is_client_up():
+                    if self.is_client_up():
+                        self._client_fail_count = 0      # 通了就清零
+                    else:
                         # 客户端冷启动要 10-20 秒，期间 9222 还没监听。
                         # 冷却时间必须比它长，否则会一边启动一边被判定"没起来"再启一个，
                         # 表现就是闲鱼客户端反复弹窗、端口互相抢占。
                         if time.time() - self._last_client_start > 45:
-                            self._last_client_start = time.time()
-                            self.start_client()
+                            self._client_fail_count += 1
+                            if self._client_fail_count <= 3:
+                                self._last_client_start = time.time()
+                                self.start_client()
+                            elif self._client_fail_count == 4:
+                                # 连续失败就停手：再自动重试只会反复杀掉用户正在
+                                # 使用的客户端窗口，且永远好不了，必须让人介入。
+                                self.log.log(
+                                    "客户端连续 4 次启动后调试端口仍未开放，"
+                                    "已停止自动重试。请检查：① 是否停在扫码登录页；"
+                                    "② 是否被安全软件拦截；"
+                                    "③ 手动打开客户端后再点「重新检测」", "ERROR")
                 elif want_client == "stop":
                     if self.is_client_up():
                         self.stop_client()
+                    self._client_fail_count = 0
                 # 采集（一次性）
                 want_collect = self.get_control("collect", "0")
                 if want_collect not in ("", "0") and want_collect != last_collect:

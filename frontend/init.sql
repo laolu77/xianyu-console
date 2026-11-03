@@ -1,14 +1,15 @@
--- 闲鱼卖家客服 · 网页端数据库初始化
--- 数据库：xianyu_autoreply （独立库，不碰现有 game_db）
+-- 闲鱼卖家客服 · 网页端数据库初始化（安全版，可重复执行）
+-- 数据库：使用连接当前选中的库（不再硬编码 xianyu_autoreply，
+--         避免用户填了别的库名时把表建到错误的库里）
 -- 字符集：utf8mb4（支持 emoji 等 4 字节字符）
 -- 适用：MySQL 5.7.26（phpStudy）
-
-CREATE DATABASE IF NOT EXISTS xianyu_autoreply DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE xianyu_autoreply;
+--
+-- 【重要】本脚本不含任何 DROP 语句：重复执行不会删除已有数据。
+--         如需彻底重建，请手动 DROP DATABASE。
 
 -- ============ 全局设置（单行） ============
-DROP TABLE IF EXISTS settings;
-CREATE TABLE settings (
+
+CREATE TABLE IF NOT EXISTS settings (
   id              INT          NOT NULL DEFAULT 1,
   cdp_port        INT          NOT NULL DEFAULT 9222,
   poll_interval   FLOAT        NOT NULL DEFAULT 3.0,
@@ -20,6 +21,12 @@ CREATE TABLE settings (
   scan_enabled   TINYINT(1) NOT NULL DEFAULT 0,
   scan_scope     INT       NOT NULL DEFAULT 10,
   scan_interval  INT       NOT NULL DEFAULT 180,
+  -- 批量上传节奏（原先漏了这两列，新装库一保存设置就报
+  --  Unknown column 'batch_interval_min'，2026-10-29 修复）
+  batch_interval_min INT   NOT NULL DEFAULT 0,
+  batch_daily_max    INT   NOT NULL DEFAULT 0,
+  -- 登录失败限流开关（1=开启，连错 5 次锁 5 分钟）
+  login_guard_enabled TINYINT(1) NOT NULL DEFAULT 1,
   selectors       JSON         NULL,
   engine_running  TINYINT(1)   NOT NULL DEFAULT 0,
   updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -27,8 +34,8 @@ CREATE TABLE settings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 自动回复规则 ============
-DROP TABLE IF EXISTS rules;
-CREATE TABLE rules (
+
+CREATE TABLE IF NOT EXISTS rules (
   id          INT          NOT NULL AUTO_INCREMENT,
   keywords    JSON         NOT NULL COMMENT '命中关键词数组，任一命中即触发',
   reply       TEXT         NOT NULL COMMENT '要发送的内容',
@@ -42,8 +49,8 @@ CREATE TABLE rules (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 会话快照 ============
-DROP TABLE IF EXISTS conversations;
-CREATE TABLE conversations (
+
+CREATE TABLE IF NOT EXISTS conversations (
   id          INT          NOT NULL AUTO_INCREMENT,
   buyer_name  VARCHAR(128) NOT NULL COMMENT '买家昵称',
   preview     VARCHAR(512) NULL COMMENT '列表预览文本',
@@ -56,8 +63,8 @@ CREATE TABLE conversations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 消息记录 ============
-DROP TABLE IF EXISTS messages;
-CREATE TABLE messages (
+
+CREATE TABLE IF NOT EXISTS messages (
   id              BIGINT       NOT NULL AUTO_INCREMENT,
   conversation_id INT          NULL,
   buyer_name      VARCHAR(128) NULL,
@@ -71,8 +78,8 @@ CREATE TABLE messages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 卡密商品（一个商品对应一串卡密） ============
-DROP TABLE IF EXISTS card_products;
-CREATE TABLE card_products (
+
+CREATE TABLE IF NOT EXISTS card_products (
   id            INT          NOT NULL AUTO_INCREMENT,
   product_name  VARCHAR(128) NOT NULL,
   keywords      JSON         NOT NULL COMMENT '订单卡片命中时的商品识别关键词',
@@ -82,8 +89,8 @@ CREATE TABLE card_products (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 卡密库存（一次性） ============
-DROP TABLE IF EXISTS card_inventory;
-CREATE TABLE card_inventory (
+
+CREATE TABLE IF NOT EXISTS card_inventory (
   id          BIGINT       NOT NULL AUTO_INCREMENT,
   product_id  INT          NOT NULL,
   code        TEXT         NOT NULL COMMENT '卡密/网盘链接',
@@ -96,8 +103,8 @@ CREATE TABLE card_inventory (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 发货记录 ============
-DROP TABLE IF EXISTS deliveries;
-CREATE TABLE deliveries (
+
+CREATE TABLE IF NOT EXISTS deliveries (
   id            BIGINT       NOT NULL AUTO_INCREMENT,
   order_id      VARCHAR(128) NULL COMMENT '订单标识（来自订单卡片）',
   buyer_name    VARCHAR(128) NOT NULL,
@@ -115,8 +122,8 @@ CREATE TABLE deliveries (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 运行日志 ============
-DROP TABLE IF EXISTS activity_log;
-CREATE TABLE activity_log (
+
+CREATE TABLE IF NOT EXISTS activity_log (
   id          BIGINT       NOT NULL AUTO_INCREMENT,
   level       VARCHAR(16)  NOT NULL DEFAULT 'INFO',
   message     TEXT         NOT NULL,
@@ -126,8 +133,8 @@ CREATE TABLE activity_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 命令队列（网页 -> 引擎） ============
-DROP TABLE IF EXISTS commands;
-CREATE TABLE commands (
+
+CREATE TABLE IF NOT EXISTS commands (
   id            BIGINT       NOT NULL AUTO_INCREMENT,
   cmd           VARCHAR(32)  NOT NULL COMMENT 'start/stop/scan_now',
   payload       JSON         NULL,
@@ -140,8 +147,8 @@ CREATE TABLE commands (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 引擎心跳/状态 ============
-DROP TABLE IF EXISTS engine_status;
-CREATE TABLE engine_status (
+
+CREATE TABLE IF NOT EXISTS engine_status (
   id              INT          NOT NULL DEFAULT 1,
   pid             INT          NULL,
   state           VARCHAR(32)  NOT NULL DEFAULT 'stopped' COMMENT 'stopped/running/error',
@@ -155,8 +162,8 @@ CREATE TABLE engine_status (
 -- ============ 店铺商品（从闲鱼个人主页采集，2026-10-17 新增） ============
 -- 数据来源：tools/collect_shop_products.py -> data/collected_products.json，
 -- 由网页端「获取商品」触发采集、进度条展示、「导入数据库」落库。
-DROP TABLE IF EXISTS shop_items;
-CREATE TABLE shop_items (
+
+CREATE TABLE IF NOT EXISTS shop_items (
   id            INT          NOT NULL AUTO_INCREMENT,
   item_id       VARCHAR(32)  NOT NULL COMMENT '闲鱼商品ID（item?id=）',
   title         VARCHAR(255) NOT NULL COMMENT '商品标题',
@@ -175,8 +182,8 @@ CREATE TABLE shop_items (
 -- ============ 卡卷（2026-10-17 新增，原「卡密商品」演进为卡卷管理） ============
 -- 卡卷 = 一组卡密/兑换码/网盘链接的打包；content 每行一条。
 -- 商品通过 item_bundles 绑定一个或多个卡卷（多对多）。
-DROP TABLE IF EXISTS card_bundles;
-CREATE TABLE card_bundles (
+
+CREATE TABLE IF NOT EXISTS card_bundles (
   id          INT          NOT NULL AUTO_INCREMENT,
   name        VARCHAR(128) NOT NULL COMMENT '卡卷名称',
   content     MEDIUMTEXT   NOT NULL COMMENT '卡卷具体内容（每行一条卡密/链接）',
@@ -187,8 +194,8 @@ CREATE TABLE card_bundles (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- ============ 商品-卡卷绑定（多对多，2026-10-17 新增） ============
-DROP TABLE IF EXISTS item_bundles;
-CREATE TABLE item_bundles (
+
+CREATE TABLE IF NOT EXISTS item_bundles (
   item_id   INT NOT NULL COMMENT 'shop_items.id',
   bundle_id INT NOT NULL COMMENT 'card_bundles.id',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -203,15 +210,11 @@ VALUES (1, 9222, 3.0, 60, 0, 1, 3, 120, 0, 10, 180,
 0)
 ON DUPLICATE KEY UPDATE id=id;
 
-INSERT INTO rules (keywords, reply, priority) VALUES
-('["在吗","在么","有人吗","在不在","你好","您好"]', '在的～看中哪款虚拟资源？付款后自动发货，秒到！', 10),
-('["怎么用","使用教程","不会用","教程","怎么兑换","如何使用"]', '卡密/链接在订单里，复制后打开对应页面兑换即可，不会操作随时喊我', 9),
-('["提取码","网盘","链接","卡密","兑换码","在哪看"]', '发货内容含链接+提取码（或兑换码），按说明操作即可，查收后麻烦确认收货哦', 8),
-('["多久到账","多久发","什么时候发","发货时间"]', '虚拟商品付款后秒发，系统自动发货，稍等几秒即可', 7),
-('["拍了没发货","没收到","未发货","没到账","没发"]', '请稍等或刷新订单页，自动发货偶尔延迟几秒；仍未收到联系我手动补发', 6),
-('["能便宜","少点","抹零","优惠","便宜点"]', '虚拟商品价格已是实价，多拍有优惠，拍前先跟我说', 5),
-('["人工","客服","转人工"]', '我在的，直接说问题就行', 4),
-('["成色","几成新","用了多久","瑕疵"]', '这是虚拟商品（卡密/网盘资源），全新未使用，一物一码', 3);
+-- 注意：这里**不再插入**默认回复规则。
+-- rules 表没有唯一键，`INSERT IGNORE` 拦不住重复，
+-- 而 ensure_schema() 每次引擎启动都会执行本脚本 ——
+-- 原种子数据会让规则数每启动一次 +8 条（2026-10-29 实测：24 → 32）。
+-- 新用户请在网页「回复规则」页自行添加；需要示例可参考 README。
 
-INSERT INTO engine_status (id, state) VALUES (1, 'stopped')
+INSERT IGNORE INTO engine_status (id, state) VALUES (1, 'stopped')
 ON DUPLICATE KEY UPDATE id=id;

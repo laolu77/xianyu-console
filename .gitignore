@@ -6,8 +6,6 @@ dist/
 *.exe.bak_*
 
 # ---- 敏感数据：绝不能提交 ----
-# 注意用 data/* 而不是 data/：目录被整体忽略时，下面的 ! 白名单不会生效，
-# 配置模板就进不了仓库（2026-10-25 实测踩坑）
 data/*
 !data/.gitkeep
 !data/db_config.example.json

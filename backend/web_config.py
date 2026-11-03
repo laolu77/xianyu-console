@@ -14,6 +14,7 @@ import json
 import os
 import re
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -104,7 +105,16 @@ _FALLBACK_CFG: Optional[dict[str, Any]] = (
     _build_db_cfg(_DBC["local"]) if _DBC["mode"] == "remote" else None)
 
 _HERE = Path(__file__).resolve().parent
-_INIT_SQL = _HERE / "init.sql"
+# 建表脚本实际放在 frontend/init.sql（历史遗留），不是 backend/。
+# 原写法 `_HERE / "init.sql"` 指向 backend/init.sql —— 那个文件根本不存在，
+# 导致 ensure_schema() 永远在 "找不到文件" 分支静默 return False，一张表都不建。
+# 结果：全新电脑装完后引擎一写心跳就报 Table doesn't exist（2026-10-29 实测）。
+_INIT_SQL_CANDIDATES = (
+    _HERE.parent / "frontend" / "init.sql",   # 正确位置
+    _HERE / "init.sql",                       # 兼容旧的放置方式
+)
+_INIT_SQL = next((p for p in _INIT_SQL_CANDIDATES if p.is_file()),
+                 _INIT_SQL_CANDIDATES[0])
 
 _conn: Optional[pymysql.connections.Connection] = None
 
@@ -181,6 +191,37 @@ def conn() -> pymysql.connections.Connection:
             raise
 
 
+def new_conn() -> pymysql.connections.Connection:
+    """开一条**独占**连接，专供后台线程使用。
+
+    【为什么必须有这个函数】
+    `conn()` 返回的是模块级全局 `_conn`，pymysql 的连接**不是线程安全的**：
+
+      · 两个线程同时往一条连接上收发 → 协议错位，抛
+        `Packet sequence number wrong - got 45 expected 29`；
+      · 更致命的是后台线程用完 `close()`，关掉的正是主线程正在用的那条
+        → 主线程抛 `read of closed file`，引擎当场退出。
+
+    2026-11-03 实测事故：引擎启动时后台补图线程调 `conn()` 查商品列表，
+    并在结束时 `close()`，主线程随即崩在心跳/读设置上，控制台日志刷
+    「引擎启动后立即退出」。改成后台线程各自 new_conn()、各自 close 才干净。
+
+    调用方负责关闭：`c = new_conn()` … `finally: c.close()`。
+    """
+    cfg = DB_CFG
+    if _FALLBACK_CFG is not None:
+        if _remote_down_recent() or not _tcp_reachable(cfg["host"], cfg["port"]):
+            cfg = _FALLBACK_CFG
+            _mark_remote_down(True)
+    try:
+        return pymysql.connect(**cfg)
+    except Exception:
+        if _FALLBACK_CFG is not None and cfg is not _FALLBACK_CFG:
+            _mark_remote_down(True)
+            return pymysql.connect(**_FALLBACK_CFG)
+        raise
+
+
 def _jload(s: Any) -> Any:
     if s is None or s == "":
         return [] if s is None else {}
@@ -198,12 +239,27 @@ def _jdump(v: Any) -> str:
 
 # ============ 建表 ============ #
 def ensure_schema() -> bool:
-    """按 init.sql 建表（已存在则跳过）。返回是否成功。"""
-    if not _INIT_SQL.exists():
+    """按 init.sql 建表（已存在则跳过），并补齐 settings 缺失列。返回是否成功。"""
+    if not _INIT_SQL.is_file():
+        # 【绝不静默返回】这一行原来是裸 `return False`，导致"装完一张表都没有"
+        # 却没有任何日志，只能靠用户看到 Table doesn't exist 去猜（2026-10-29 教训）。
+        try:
+            print(f"[web_config] 建表脚本不存在：{_INIT_SQL}，"
+                  f"跳过建表（表可能不完整）；尝试补列…", file=sys.stderr, flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            ensure_settings_columns()      # 表若已存在，至少把列补齐
+        except Exception:  # noqa: BLE001
+            pass
         return False
     sql = _INIT_SQL.read_text(encoding="utf-8")
-    # init.sql 不含存储过程，按 ';' 切分即可安全执行。
-    stmts = [s.strip() for s in sql.split(";") if s.strip() and not s.strip().startswith("--")]
+    # 【关键】必须先剥离 `--` 行注释再按 ';' 切分。
+    # 原写法 `if not s.strip().startswith("--")` 会把"注释 + 紧跟的 CREATE TABLE"
+    # 整段丢弃（init.sql 里每张表前面都有 `-- ==== 标题 ====`），
+    # 结果是一条建表语句都执行不到，一张表也建不出来（2026-10-29 实测）。
+    sql = re.sub(r"^\s*--[^\n]*$", "", sql, flags=re.M)
+    stmts = [s.strip() for s in sql.split(";") if s.strip()]
     c = conn().cursor()
     try:
         for st in stmts:
@@ -224,36 +280,81 @@ def ensure_schema() -> bool:
         c.close()
 
 
-def _migrate_settings_columns(c) -> None:
-    """老库幂等补列：init.sql 新增的 settings 列在此补齐。"""
-    c.execute(
-        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'settings'"
-    )
-    have = {row[0] for row in c.fetchall()}
-    # (列名, 列定义) —— 新增可调频率参数也在此追加
-    wanted = [
-        ("rate_limit_enabled", "TINYINT(1) NOT NULL DEFAULT 1"),
-        ("rate_limit_per_user_hour", "INT NOT NULL DEFAULT 3"),
-        ("rate_limit_window_sec", "INT NOT NULL DEFAULT 120"),
-        # 定时扫描（静默买家捞单）：开关 / 范围（0=全部，N=前 N 个会话）/ 间隔秒
-        ("scan_enabled", "TINYINT(1) NOT NULL DEFAULT 0"),
-        ("scan_scope", "INT NOT NULL DEFAULT 10"),
-        ("scan_interval", "INT NOT NULL DEFAULT 180"),
-        # 登录失败限流开关：连续输错 5 次锁 5 分钟。默认开启，
-        # 用户在「设置」里可关掉（2026-10-25 用户要求做成可开关）。
-        ("login_guard_enabled", "TINYINT(1) NOT NULL DEFAULT 1"),
-    ]
-    for col, ddl in wanted:
-        # 注意：不能写成 `if have and col not in have` —— 一旦 information_schema
-        # 读不到（权限/视图差异），have 为空就整批跳过，新列永远补不上
-        # （2026-10-25 实测：login_guard_enabled 因此没建出来）。
-        if col in have:
-            continue
+# settings 表必须具备的列（幂等补列的依据）。
+# 【踩坑】init.sql 的 CREATE TABLE 里当初漏了 batch_* 两列，迁移清单也漏了，
+# 于是新装用户的 settings 表没有这两列，一保存设置就报
+# `Unknown column 'batch_interval_min' in 'field list'`（2026-10-29 实测）。
+_SETTINGS_COLUMNS: list[tuple[str, str]] = [
+    ("rate_limit_enabled", "TINYINT(1) NOT NULL DEFAULT 1"),
+    ("rate_limit_per_user_hour", "INT NOT NULL DEFAULT 3"),
+    ("rate_limit_window_sec", "INT NOT NULL DEFAULT 120"),
+    # 定时扫描（静默买家捞单）
+    ("scan_enabled", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ("scan_scope", "INT NOT NULL DEFAULT 10"),
+    ("scan_interval", "INT NOT NULL DEFAULT 180"),
+    # 批量上传节奏
+    ("batch_interval_min", "INT NOT NULL DEFAULT 0"),
+    ("batch_daily_max", "INT NOT NULL DEFAULT 0"),
+    # 登录失败限流开关
+    ("login_guard_enabled", "TINYINT(1) NOT NULL DEFAULT 1"),
+]
+
+
+def ensure_settings_columns() -> list[str]:
+    """补齐 settings 表缺失的列（幂等，可反复调用）。
+
+    刻意与 ensure_schema() **解耦**：即使 init.sql 找不到、或建表中途失败，
+    也必须能走到这里补列，否则老库/半成品库会一直缺列。
+
+    Returns:
+        本次实际新增的列名列表（已存在的不计入）。
+    """
+    added: list[str] = []
+    try:
+        c = conn().cursor()
+    except Exception:  # noqa: BLE001
+        return added          # 库连不上，交给上层报错
+    try:
+        c.execute(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'settings'")
+        have = {row[0] for row in c.fetchall()}
+        if not have:
+            return added      # settings 表还不存在，等建表完成后再补
+        for col, ddl in _SETTINGS_COLUMNS:
+            if col in have:
+                continue
+            try:
+                c.execute(f"ALTER TABLE settings ADD COLUMN {col} {ddl}")
+                added.append(col)
+            except Exception:  # noqa: BLE001
+                pass          # 并发加列 / 已存在，忽略
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
         try:
-            c.execute(f"ALTER TABLE settings ADD COLUMN {col} {ddl}")
+            c.close()
         except Exception:  # noqa: BLE001
-            pass  # 列已存在 / 并发加列，忽略
+            pass
+    return added
+
+
+def _migrate_settings_columns(c) -> None:
+    """（内部）建表后复用同一个游标补列，避免另开连接。"""
+    try:
+        c.execute(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'settings'")
+        have = {row[0] for row in c.fetchall()}
+        for col, ddl in _SETTINGS_COLUMNS:
+            if col in have:
+                continue
+            try:
+                c.execute(f"ALTER TABLE settings ADD COLUMN {col} {ddl}")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ============ 全局设置 ============ #
